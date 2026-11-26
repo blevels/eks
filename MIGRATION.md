@@ -171,11 +171,14 @@ Golden expectations capture the intended namespace text/JSON contract rather
 than executing the retyped shell against live resources.
 
 The Makefile provides formatting, race tests, vet, staticcheck, and six static
-cross-builds. Cross-builds are not native runtime verification. Real RDS,
-CyberArk, OAuth/firecall, and EKS access have not been exercised with user
-credentials. Windows ACL behavior and secure terminal restoration require native
-platform validation. The direct subprocess is cancelled; arbitrary detached
-descendants are outside the portable process boundary.
+cross-builds. Windows-only regression tests now inspect the protected
+owner-rights ACL and inherited file ACL using synthetic credentials, but the
+Linux development environment cannot execute them; native Windows ACL behavior
+and secure password-terminal restoration still need native platform validation.
+No kconnect binary is installed here, so actual 0.5.24 invocation has not been
+exercised. Real RDS, CyberArk, OAuth/firecall, and EKS access have not been
+exercised with user credentials. The direct subprocess is cancelled; arbitrary
+detached descendants are outside the portable process boundary.
 
 Legacy CBC ciphertext is unauthenticated. Temporary plaintext credentials can
 survive forced termination; normal cleanup is not a secure disk erase. Go
