@@ -6,6 +6,9 @@
   `readSecret` cases for hidden-input parsing, ASCII and Unicode backspace,
   Ctrl-C, Ctrl-D, and reader EOF.
 - `go test -race ./internal/terminal` passed on Linux.
+- For this verification attempt, the host was Linux x86_64 with Go 1.26.11;
+  the terminal package tests passed again, and test binaries compiled for
+  `darwin/amd64` and `darwin/arm64`.
 - `go test ./...` passed on Linux.
 - The terminal package test binaries compiled for `windows/amd64` and
   `darwin/amd64`.
@@ -31,3 +34,11 @@ operating system may still terminate the process if it does not exit promptly.
 
 Actual hidden-echo and terminal-state restoration checks still need to run with
 synthetic keystrokes on native Windows and macOS terminals.
+
+## Native macOS task status
+
+Not performed: this run had no native macOS host. The macOS version and native
+results are therefore unavailable. The Linux tests and Darwin cross-compiles
+above do not verify hidden echo, terminal-mode restoration, Ctrl-C handling,
+context cancellation, SIGTERM, or EOF behavior on macOS. This task remains
+blocked until the terminal tests are run on a native macOS machine.
