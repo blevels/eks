@@ -39,6 +39,14 @@ func TestCredentialDeliveryAndCleanup(t *testing.T) {
 				if configPath == "" {
 					t.Fatal("missing config")
 				}
+				wantArgs := []string{
+					"use", "eks", "--config", configPath, "--no-version-check", "--no-input", "--no-history",
+					"--idp-protocol", "saml", "--namespace", "payments", "--role-arn", "arn",
+					"--idp-endpoint", "https://idp.invalid", "--idp-provider", "PingNTLM", "--region", "us-east-1",
+				}
+				if strings.Join(args, "\x00") != strings.Join(wantArgs, "\x00") {
+					t.Fatalf("kconnect arguments = %#v, want %#v", args, wantArgs)
+				}
 				if strings.Contains(strings.Join(args, " "), "secret-password") || strings.Contains(strings.Join(args, " "), "--password") {
 					t.Error("password in args")
 				}
@@ -114,6 +122,38 @@ func TestCancellationAndOutputCap(t *testing.T) {
 	var w cappedOutput
 	if n, err := w.Write(make([]byte, 100000)); err != nil || n != 100000 || w.Len() != 65536 {
 		t.Fatal(n, err, w.Len())
+	}
+}
+
+func TestCancellationRemovesTemporaryCredentials(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan string, 1)
+	r := Runner{
+		Binary:  "fake-kconnect",
+		Timeout: time.Minute,
+		Exec: executorFunc(func(ctx context.Context, _ string, args []string, _, _ io.Writer) error {
+			for i, arg := range args {
+				if arg == "--config" && i+1 < len(args) {
+					started <- args[i+1]
+					break
+				}
+			}
+			<-ctx.Done()
+			return ctx.Err()
+		}),
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- r.Connect(ctx, Request{Username: "synthetic-user", Password: "synthetic-password"})
+	}()
+	configPath := <-started
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Dir(configPath)); !os.IsNotExist(err) {
+		t.Fatal("credentials not cleaned up after cancellation", err)
 	}
 }
 

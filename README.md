@@ -175,6 +175,9 @@ Connection history is disabled; kconnect still updates AWS/kubeconfig state.
 
 The direct child is cancelled on shutdown; arbitrary detached descendants are
 not guaranteed to be terminated. Windows signal behavior differs from Unix.
-Cross-compilation alone does not verify native Windows ACLs, password terminals,
-or real provider compatibility. Unit tests use synthetic credentials and
-database/HTTP/command fakes; live access is not needed for those tests.
+Windows-only tests inspect the protected owner-rights directory ACL and the
+inherited ACL on a synthetic config file. Cross-compilation alone does not run
+those checks or verify native password-terminal restoration. This Linux
+environment also has no installed kconnect binary, so actual 0.5.24 invocation
+and provider compatibility still need a native run. Unit tests use synthetic
+credentials and database/HTTP/command fakes; live access is not needed for them.
