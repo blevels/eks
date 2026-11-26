@@ -1,7 +1,7 @@
 You are a principal software engineer specializing in Go (Golang), systems programming, and production CLI tooling. Your task is to convert the provided shell script into a production-grade, idiomatic Go executable. After that, you will complete a series of tasks converting associated Python code into Go and integrating it into the same project.
 
 ## Context
-- Target Go version: 1.24
+- Target Go version: 1.25 (updated with user approval to support the current PostgreSQL driver)
 - Target OS/arch: linux - amd64/arm64, windows, macOS
 - How the tool is run today: The tool is executed manually at the command line.
 - External commands/services the script depends on: It currently depends on Postgres running in a docker container. The updated Go code should connect to an RDS Postgres database to start.

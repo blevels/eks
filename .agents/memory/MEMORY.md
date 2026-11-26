@@ -1,0 +1,2 @@
+- [Migration baseline](migration-baseline.md) — treat the supplied shell as a retyped working POC; retain encrypted dotenv credentials and production-only firecall.
+- [Toolchain constraints](toolchain-constraints.md) — approved target upgrade avoids blocked driver versions; verify the supported compiler target with verified tooling.
