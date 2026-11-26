@@ -177,7 +177,13 @@ The direct child is cancelled on shutdown; arbitrary detached descendants are
 not guaranteed to be terminated. Windows signal behavior differs from Unix.
 Windows-only tests inspect the protected owner-rights directory ACL and the
 inherited ACL on a synthetic config file. Cross-compilation alone does not run
-those checks or verify native password-terminal restoration. This Linux
-environment also has no installed kconnect binary, so actual 0.5.24 invocation
-and provider compatibility still need a native run. Unit tests use synthetic
-credentials and database/HTTP/command fakes; live access is not needed for them.
+those checks or verify native password-terminal restoration. The Linux AMD64
+kconnect 0.5.24 binary was run with this temporary JSON configuration under an
+isolated home directory and accepted it, proceeding to a SAML request pointed
+only at loopback; the request was intentionally refused, so no AWS or identity
+provider service was contacted. The child command arguments contained no
+credentials. Unit tests verify temporary-file removal after success, child
+failure, and cancellation. This confirms config and invocation compatibility,
+not a real provider login, AWS discovery, or native Windows/macOS behavior.
+Unit tests use synthetic credentials and database/HTTP/command fakes; live
+access is not needed for them.
