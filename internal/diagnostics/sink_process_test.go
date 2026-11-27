@@ -18,7 +18,7 @@ const sinkHelperModeEnv = "EKS_DIAGNOSTICS_SINK_HELPER"
 const sinkHelperPathEnv = "EKS_DIAGNOSTICS_SINK_PATH"
 
 // TestSinkProcessHelper runs only in a copy of this test binary. In particular,
-// the holder must not Close its sink: the parent kills it to exercise OS cleanup.
+// the crash holder must not Close its sink: the parent kills it to exercise OS cleanup.
 func TestSinkProcessHelper(t *testing.T) {
 	mode := os.Getenv(sinkHelperModeEnv)
 	if mode == "" {
@@ -58,6 +58,36 @@ func TestSinkProcessHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	switch mode {
+	case "close-error":
+		if _, err := s.Write([]byte("held-0\n")); err != nil {
+			t.Fatal(err)
+		}
+		// Closing the underlying file makes both Sync and Close fail inside
+		// Sink.Close without touching the separate ownership lease.
+		if err := s.file.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Close(); err == nil || err.Error() != "log_sink_close_failed" {
+			t.Fatalf("expected log_sink_close_failed, got %v", err)
+		}
+		if _, err := fmt.Fprintln(os.Stdout, "close-failed"); err != nil {
+			t.Fatal(err)
+		}
+		// Stay alive until the parent confirms that another process acquired the
+		// log. Process-exit cleanup must not be what releases ownership.
+		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		runtime.KeepAlive(s)
+		if err != nil || line != "acquired\n" {
+			t.Fatalf("expected acquisition confirmation, got %q, err=%v", line, err)
+		}
+	case "open":
+		record := []byte("reopened\n")
+		if n, err := s.Write(record); err != nil || n != len(record) {
+			t.Fatalf("write reopened record: n=%d, err=%v", n, err)
+		}
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
 	case "hold":
 		if _, err := s.Write([]byte("held-0\n")); err != nil {
 			t.Fatal(err)
@@ -324,6 +354,76 @@ func TestSinkLockReleasedAfterArchiveInitializationFailure(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestSinkLockReleasedAfterCloseError(t *testing.T) {
+	path := filepath.Join(privateTestDir(t), "events.log")
+	if err := os.WriteFile(path+".lock", nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	lockBefore, err := os.Stat(path + ".lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	holder := sinkHelperCommand(t, ctx, "close-error", path)
+	var stderr bytes.Buffer
+	holder.Stderr = &stderr
+	stdout, err := holder.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdin, err := holder.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdin.Close()
+	if err := holder.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waited := false
+	t.Cleanup(func() {
+		cancel()
+		if !waited {
+			// Reap before TempDir cleanup, including on Windows.
+			_ = holder.Wait()
+		}
+	})
+	ready := make(chan error, 1)
+	go func() {
+		line, err := bufio.NewReader(stdout).ReadString('\n')
+		if err == nil && line != "close-failed\n" {
+			err = fmt.Errorf("unexpected close-error readiness message %q", line)
+		}
+		ready <- err
+	}()
+	select {
+	case err := <-ready:
+		if err != nil {
+			t.Fatalf("holder did not report the expected close failure: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for close failure")
+	}
+
+	requireSameSinkSidecar(t, path, lockBefore)
+	// The holder is still waiting on stdin; no process exit, sidecar unlink,
+	// or retry is allowed to make this acquisition succeed.
+	runSinkHelper(t, "open", path)
+	requireSameSinkSidecar(t, path, lockBefore)
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "held-0\nreopened\n" {
+		t.Fatalf("log after close failure: got %q, err=%v", data, err)
+	}
+	if _, err := fmt.Fprintln(stdin, "acquired"); err != nil {
+		t.Fatal(err)
+	}
+	err = holder.Wait()
+	waited = true
+	if err != nil {
+		t.Fatalf("close-error holder: %v\n%s", err, stderr.String())
 	}
 }
 

@@ -35,8 +35,9 @@ jobs:
           New-Item -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock' -Force | Out-Null
           New-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock' -Name AllowDevelopmentWithoutDevLicense -Value 1 -PropertyType DWord -Force | Out-Null
       - name: Run native diagnostics tests
-        # Includes subprocess lock contention, crash recovery, and archive
-        # initialization failure recovery while the rejecting process lives.
+        # Includes subprocess lock contention, forced-exit recovery, and lock
+        # release after archive initialization and Close errors while the
+        # original process stays alive.
         shell: bash
         run: |
           set -euo pipefail
