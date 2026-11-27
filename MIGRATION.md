@@ -105,20 +105,27 @@ No further API specification is assumed.
   The list includes `n.ns_id`, resolving the five-column header discrepancy.
 - The positional length heuristic remains; explicit selectors are additive.
 - The production environment marker is exactly `prod`, not case-insensitive
-  guessing. The `s` prefix is applied to the freshly decrypted base user once per
+  guessing. The approved environment allowlist is exactly `dev`, `sit`, `uat`,
+  and `prod`; all other values fail validation. The `s` prefix is applied to the freshly decrypted base user once per
   cycle. Email uses that base user and configured domain.
 - OAuth follows the script's operation order: production effective credentials
   become `client_id`/`client_secret`; grant is `client_credentials`, scope is
   `AppIdClaimsTrust`, and the token field is `access_token`.
-- Firecall listing is a JSON array. Match **only** exact `active` status and
-  account, as in the script. `requester`, `iamRoleArn`, and `end_time` are display
-  fields, not newly imposed authorization filters.
+- Firecall listing is a JSON array. The approved authorization policy requires
+  exact `active` status, account, and the selected role's full `iamRoleArn`.
+  This is intentionally stricter than the original account/status-only match.
+  `requester` and `end_time` remain display fields, not authorization filters.
 - Creation posts to `FIRECALL_URI`, distinct from list `FIRECALL_URL`.
   Request fields: `iam_role_arn` array, string `duration_in_hours`, `ticket`,
   and `email`. Response is an array containing `firecall_id`, `status`, `message`.
   Require at least one `SUCCESS` record with a nonempty/non-null ID.
-- Successful creation is followed by connection, matching the POC's sequence.
-  No additional approval polling or expiration parsing was silently added.
+- Successful creation is followed by activation verification, an approved
+  deviation from the POC's immediate connection. Check the list immediately,
+  then every 5 seconds for at most 2 minutes (both configurable). Require an
+  active account-and-role match before connection. Timeout, cancellation, or
+  an API failure stops the operation without retrying creation. The list does
+  not expose request IDs, so this confirms authorization, not that a particular
+  newly created request is active. No expiration parsing was added.
 - HTTP 2xx is required, not merely the presence of a status string.
   Empty/no-match lists are not themselves authorization. An API failure never
   authorizes a connection; declining creation stops it.
@@ -185,9 +192,9 @@ survive forced termination; normal cleanup is not a secure disk erase. Go
 strings are not guaranteed to be zeroized. kconnect itself and its credential
 stores remain part of the trust boundary.
 
-The account/status firecall policy may be broader than a future production policy
-requires. It is preserved deliberately, not claimed to validate requester/role
-or expiry. Service-specific response types (including string account IDs)
+The account/role/status firecall policy does not validate requester or expiry.
+Activation checks cannot correlate a list record to the newly created request ID.
+Service-specific response types (including string account IDs)
 follow the supplied jq expressions and can be adjusted in
 the isolated firecall package if live responses differ. Request IDs accept both
 JSON strings and numbers, retaining large numeric IDs without float rounding.

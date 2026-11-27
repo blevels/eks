@@ -29,7 +29,9 @@ func TestWireContract(t *testing.T) {
 				t.Error("missing bearer")
 			}
 			fmt.Fprint(w, `[
-				{"firecall_status":"active","account_id":"123456789012","requester":"another-user","iamRoleArn":"different-role","end_time":"not-parsed"},
+				{"firecall_status":"active","account_id":"123456789012","requester":"another-user","iamRoleArn":"arn:test","end_time":"not-parsed"},
+				{"firecall_status":"active","account_id":"123456789012","iamRoleArn":"different-role"},
+				{"firecall_status":"active","account_id":"123456789012"},
 				{"firecall_status":"closed","account_id":"123456789012"},
 				{"firecall_status":"active","account_id":"000000000000"}
 			]`)
@@ -57,7 +59,7 @@ func TestWireContract(t *testing.T) {
 	if err != nil || token != "token" {
 		t.Fatal(token, err)
 	}
-	active, err := c.List(context.Background(), token, "123456789012")
+	active, err := c.List(context.Background(), token, "123456789012", "arn:test")
 	if err != nil || len(active) != 1 || active[0].Requester != "another-user" {
 		t.Fatal(active, err)
 	}
@@ -155,7 +157,7 @@ func TestListAndHTTPTimeout(t *testing.T) {
 	}))
 	defer s.Close()
 	c := New(10*time.Millisecond, "", s.URL, s.URL)
-	found, err := c.List(context.Background(), "t", "account")
+	found, err := c.List(context.Background(), "t", "account", "arn:test")
 	if err != nil || len(found) != 0 {
 		t.Fatal(found, err)
 	}

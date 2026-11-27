@@ -125,16 +125,16 @@ func (c *Client) Token(ctx context.Context, username, password string) (string, 
 	return response.Token, nil
 }
 
-func (c *Client) List(ctx context.Context, token, account string) ([]Active, error) {
+func (c *Client) List(ctx context.Context, token, account, roleARN string) ([]Active, error) {
 	var all []Active
 	if err := c.request(ctx, http.MethodGet, c.ListURL, token, "", nil, &all); err != nil {
 		return nil, fmt.Errorf("list firecalls: %w", err)
 	}
 	found := []Active{}
-	// Preserve the POC's account + active-status matching policy. Do not add
-	// requester, role, or timestamp-based authorization rules silently.
+	// Authorization requires the selected account and full IAM role ARN.
+	// Requester and expiration checks are intentionally not part of this policy.
 	for _, item := range all {
-		if item.Status == "active" && item.Account == account {
+		if item.Status == "active" && item.Account == account && item.Role == roleARN {
 			found = append(found, item)
 		}
 	}

@@ -74,6 +74,7 @@ only (`chmod 600 .env` on Unix; restrict file ACLs on Windows).
 | `CM_TICKET` | Optional preset; prompted when opening a request if absent |
 | `DURATION_IN_HRS` | `8` |
 | `INTERVAL`, `TIMEOUT`, `COMMAND_TIMEOUT` | `900s`, `15s`, `2m` |
+| `FIRECALL_POLL_INTERVAL`, `FIRECALL_ACTIVATION_TIMEOUT` | `5s`, `2m`; overridden by `--firecall-poll-interval` and `--firecall-activation-timeout` |
 
 RDS connections always use **TLS verify-full**; configure a trusted RDS CA bundle
 where system trust is insufficient. HTTP uses system certificate trust and
@@ -124,11 +125,17 @@ after each connection completes. Errors stop the loop. Ctrl-C / SIGTERM cancels
 network calls, the active direct subprocess, terminal waits, and refresh waits.
 For production the base username gets an `s` prefix, as in the POC.
 
-Production checks an OAuth-authenticated firecall list for `active` records whose
-`account_id` matches the chosen account. If none exists, the user must confirm
-creation and provide a ticket. A successful create response then permits the
-connection, preserving the POC sequence. Declining or an API error stops it.
-See the explicitly documented authorization limitations in MIGRATION.md.
+Only the exact environment names `dev`, `sit`, `uat`, and `prod` are accepted;
+unknown names are rejected, and only `prod` requires production authorization.
+Production checks an OAuth-authenticated firecall list for exact `active` status,
+the chosen `account_id`, and `iamRoleArn` matching the selected role's full ARN.
+If none exists, the user must confirm creation and provide a ticket. After a
+successful creation, the CLI checks activation immediately, then every 5 seconds
+for up to 2 minutes, configurable using the settings above. Creation is submitted
+only once. Timeout, cancellation, or an API error stops without connecting.
+An active record for that account and role authorizes connection; requester and
+expiration are not checked, and the list contract cannot correlate activation
+to a specific created request ID. See MIGRATION.md for service assumptions.
 
 ### Output and logging
 

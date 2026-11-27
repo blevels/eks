@@ -40,6 +40,8 @@ Options must precede the positional selector.
   --decrypt-digest VALUE   sha256 (default) or legacy md5
   --ticket VALUE           Change/incident ticket (creation still prompts)
   --duration HOURS         Firecall request duration (default 8)
+  --firecall-poll-interval DURATION       Activation check delay (default 5s)
+  --firecall-activation-timeout DURATION  Total activation wait (default 2m)
 
 Secrets are read only from environment/dotenv, never flags:
   ENC_USERNAME, ENC_PASSWORD, DECRYPT_PASSPHRASE, PGPASSWORD,

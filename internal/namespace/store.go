@@ -35,8 +35,10 @@ func (n Namespace) Validate() error {
 	if !regexp.MustCompile(`^[A-Za-z0-9+=,.@_/-]+$`).MatchString(n.Role) {
 		return errors.New("database returned an invalid IAM role")
 	}
-	if n.Environment == "" {
-		return errors.New("database returned an empty environment")
+	switch n.Environment {
+	case "dev", "sit", "uat", "prod":
+	default:
+		return errors.New("database returned an invalid environment: expected dev, sit, uat, or prod")
 	}
 	return nil
 }

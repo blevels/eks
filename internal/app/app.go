@@ -23,7 +23,7 @@ type Connector interface {
 }
 type Firecalls interface {
 	Token(context.Context, string, string) (string, error)
-	List(context.Context, string, string) ([]firecall.Active, error)
+	List(context.Context, string, string, string) ([]firecall.Active, error)
 	Create(context.Context, string, string, string, string, int) ([]firecall.Created, error)
 }
 type Interaction interface {
@@ -146,6 +146,9 @@ func (a *App) Run(ctx context.Context) error {
 				return err
 			}
 		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := a.Connector.Connect(ctx, kconnect.Request{Username: username, Password: password, Namespace: n.Name, ARN: n.ARN(), Region: c.Region, Endpoint: c.IDPEndpoint, Provider: c.IDPProvider}); err != nil {
 			return err
 		}
@@ -167,7 +170,7 @@ func (a *App) authorize(ctx context.Context, n namespace.Namespace, username, pa
 	if err != nil {
 		return err
 	}
-	active, err := a.Firecalls.List(ctx, token, n.Account)
+	active, err := a.Firecalls.List(ctx, token, n.Account, n.ARN())
 	if err != nil {
 		return err
 	}
@@ -195,7 +198,38 @@ func (a *App) authorize(ctx context.Context, n namespace.Namespace, username, pa
 	if err != nil {
 		return err
 	}
-	// Preserve the POC's successful-create then connect sequence. A post-create
-	// approval poll would impose an API/policy contract not present in the script.
-	return a.Output.Created(created)
+	if err := a.Output.Created(created); err != nil {
+		return err
+	}
+	return a.waitForActivation(ctx, n, token)
+}
+
+// waitForActivation confirms account-and-role authorization, not a specific
+// request ID: the current list contract does not expose request IDs.
+func (a *App) waitForActivation(ctx context.Context, n namespace.Namespace, token string) error {
+	ctx, cancel := context.WithTimeout(ctx, a.Config.FirecallActivationTimeout)
+	defer cancel()
+	wait := a.Wait
+	if wait == nil {
+		wait = Wait
+	}
+	a.Log.Info("waiting for firecall activation", "timeout", a.Config.FirecallActivationTimeout.String())
+	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("waiting for firecall activation: %w", err)
+		}
+		active, err := a.Firecalls.List(ctx, token, n.Account, n.ARN())
+		if err != nil {
+			return fmt.Errorf("confirm firecall activation: %w", err)
+		}
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("waiting for firecall activation: %w", err)
+		}
+		if len(active) > 0 {
+			return a.Output.Active(active)
+		}
+		if err := wait(ctx, a.Config.FirecallPollInterval); err != nil {
+			return fmt.Errorf("waiting for firecall activation: %w", err)
+		}
+	}
 }
