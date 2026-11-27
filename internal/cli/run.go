@@ -108,10 +108,12 @@ func Run(ctx context.Context, args []string, version string, in *os.File, out, s
 			}
 		}
 	}()
+	firecalls := firecall.New(c.Timeout, c.OAuthURL, c.FirecallListURL, c.FirecallCreateURL)
+	firecalls.Log = log
 	application := app.App{
 		Config: c, Store: namespace.Store{DB: db, Timeout: c.Timeout},
 		Connector: kconnect.Runner{Binary: c.Kconnect, Timeout: c.CommandTimeout},
-		Firecalls: firecall.New(c.Timeout, c.OAuthURL, c.FirecallListURL, c.FirecallCreateURL),
+		Firecalls: firecalls,
 		UI:        &terminal.Terminal{In: in, Out: stderr}, Output: app.Printer{Writer: out, JSON: c.JSON}, Log: log,
 	}
 	err = application.Run(ctx)

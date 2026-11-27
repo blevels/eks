@@ -123,13 +123,23 @@ No further API specification is assumed.
   deviation from the POC's immediate connection. Check the list immediately,
   then every 5 seconds for at most 2 minutes (both configurable). Require an
   active account-and-role match before connection. Timeout, cancellation, or
-  an API failure stops the operation without retrying creation. The list does
+  an API failure after bounded eligible read-only retries stops the operation
+  without retrying creation. The list does
   not expose request IDs, so this confirms authorization, not that a particular
   newly created request is active. No expiration parsing was added.
 - HTTP 2xx is required, not merely the presence of a status string.
   Empty/no-match lists are not themselves authorization. An API failure never
   authorizes a connection; declining creation stops it.
-- No automatic HTTP retries, particularly for creation after an uncertain result.
+- Only read-only firecall-list GETs have automatic retries: three total attempts
+  for transient connection failures, timeouts, or HTTP 408/429/502/503/504.
+  Exponential backoff starts at 500ms then 1s, with up to 25% additive jitter
+  and a 5s backoff cap. Retry-After is a minimum delay, not capped by the
+  backoff cap; a delay that cannot fit the remaining deadline stops the request.
+  All attempts, body reads, and waits share one configured HTTP timeout budget,
+  further limited by the caller's context and activation deadline.
+  No automatic OAuth or creation retries, particularly after an uncertain result.
+  Permanent DNS, TLS/certificate, authentication, invalid JSON and response-size
+  failures are not retried. This is an approved reliability change from the POC.
 - OpenSSL default digest varies by generation; default SHA-256 and explicit MD5
   compatibility are supported. No PBKDF2 or authenticated-encryption migration
   is imposed on the existing format.
@@ -167,6 +177,14 @@ No further API specification is assumed.
     succeed; zero results for a connection fail.
 14. Refresh state is local to each cycle, preventing an old creation choice from
     automatically opening repeated requests.
+15. HTTP failures are typed, safe categories with status codes where available;
+    raw transport errors are not retained in returned chains because they may
+    expose URLs or secrets through error inspection. Cancellation and timeout
+    remain detectable through safe context sentinels and timeout classification.
+    HTTP attempt diagnostics use the CLI's stderr logger: failures at warning
+    level, successes and retry scheduling at debug level. Read-only retries
+    follow the bounded exponential-backoff policy above; activation polling
+    remains separate and does not reset any request deadline.
 
 ## Verification and remaining risks
 

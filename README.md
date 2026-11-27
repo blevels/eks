@@ -132,10 +132,46 @@ the chosen `account_id`, and `iamRoleArn` matching the selected role's full ARN.
 If none exists, the user must confirm creation and provide a ticket. After a
 successful creation, the CLI checks activation immediately, then every 5 seconds
 for up to 2 minutes, configurable using the settings above. Creation is submitted
-only once. Timeout, cancellation, or an API error stops without connecting.
+only once. Timeout, cancellation, or an API error after eligible lookup retries
+stops without connecting.
 An active record for that account and role authorizes connection; requester and
 expiration are not checked, and the list contract cannot correlate activation
 to a specific created request ID. See MIGRATION.md for service assumptions.
+
+### HTTP diagnostics and retries
+
+The client reuses one HTTP client during a run. Each logical HTTP operation has
+one `--timeout` / `TIMEOUT` budget (15 seconds by default), including all attempts,
+response reads, and retry delays. A shorter caller deadline always wins; activation
+checks also stay within `--firecall-activation-timeout`. The timeout does not reset
+on each retry.
+
+Only the read-only firecall-list GET is automatically retried, at most **three
+total attempts**:
+
+- Retry transient connection failures and timeouts, plus HTTP **408, 429, 502,
+  503, and 504**. Permanent DNS failures, TLS validation errors, authentication
+  failures, invalid JSON, and oversized responses are not retried.
+- Exponential backoff starts at **500 ms**, then **1 second**, plus random
+  additive jitter up to 25%. The backoff, including jitter, is capped at
+  **5 seconds**; the three-attempt limit normally uses only the first two delays.
+- A valid `Retry-After` (seconds or HTTP date) is a minimum delay, even when longer
+  than the backoff cap. If the required delay cannot fit in the remaining budget,
+  stop immediately without retrying early or extending the deadline.
+- OAuth token POSTs and firecall-creation POSTs are **never automatically retried**.
+  A failed or uncertain creation result must be checked before manually retrying.
+  No tokens or firecall authorization results are cached.
+
+Failure retries are separate from activation polling: a successful lookup with
+no active match is not an HTTP failure. It returns to the existing activation
+polling loop, which waits the configured polling interval.
+
+HTTP attempt failures are logged on stderr with operation name, attempt number,
+duration, safe category, and HTTP status when available. `--verbose` also shows
+successful attempts and scheduled retry delays. Raw URLs, transport error text,
+headers, credentials, tokens, and request/response bodies are excluded.
+Returned errors preserve safe cancellation/timeout checks without exposing the
+underlying URL-bearing transport error.
 
 ### Output and logging
 
