@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"eks/internal/namespace"
 )
@@ -92,6 +93,52 @@ func TestPromptFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestCancelledPasswordReadPreservesInputForNextPrompt(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = r.Close()
+		_ = w.Close()
+	})
+	ui := &Terminal{In: r, Out: io.Discard}
+	ctx, cancel := context.WithCancel(context.Background())
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := ui.readPassword(ctx)
+		readDone <- err
+	}()
+
+	// Wait until the password reader owns the terminal and is blocked awaiting
+	// input, rather than cancelling before its goroutine begins.
+	deadline := time.Now().Add(time.Second)
+	for ui.mu.TryLock() {
+		ui.mu.Unlock()
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("password reader did not start")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	if err := <-readDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled password read returned %v", err)
+	}
+
+	if _, err := io.WriteString(w, "next-prompt-answer\n"); err != nil {
+		t.Fatal(err)
+	}
+	line, err := ui.line(context.Background(), "Next prompt: ")
+	if err != nil {
+		t.Fatalf("next prompt could not read input: %v", err)
+	}
+	if line != "next-prompt-answer" {
+		t.Fatalf("next prompt received %q, want %q", line, "next-prompt-answer")
+	}
+}
+
 func TestNoAndFinalLine(t *testing.T) {
 	ui := Terminal{In: input(t, "no"), Out: io.Discard}
 	yes, err := ui.Confirm(context.Background())

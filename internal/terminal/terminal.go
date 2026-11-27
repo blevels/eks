@@ -3,6 +3,7 @@ package terminal
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -97,27 +98,8 @@ func (t *Terminal) Password(ctx context.Context) (string, error) {
 	if _, err := fmt.Fprint(t.Out, "Enter production authorization (CyberArk) password: "); err != nil {
 		return "", errors.Join(err, term.Restore(fd, state))
 	}
-	type result struct {
-		p   []byte
-		err error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		t.mu.Lock()
-		if t.reader == nil {
-			t.reader = bufio.NewReader(t.In)
-		}
-		p, e := readSecret(t.reader)
-		t.mu.Unlock()
-		ch <- result{p, e}
-	}()
-	var password string
-	select {
-	case <-ctx.Done():
-		err = ctx.Err()
-	case r := <-ch:
-		password, err = string(r.p), r.err
-	}
+	p, readErr := t.readPassword(ctx)
+	password, err := string(p), readErr
 	restoreErr := term.Restore(fd, state)
 	_, writeErr := fmt.Fprintln(t.Out)
 	if err = errors.Join(err, restoreErr, writeErr); err != nil {
@@ -129,9 +111,46 @@ func (t *Terminal) Password(ctx context.Context) (string, error) {
 	return password, nil
 }
 
+func (t *Terminal) readPassword(ctx context.Context) ([]byte, error) {
+	type result struct {
+		p   []byte
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		t.mu.Lock()
+		if t.reader == nil {
+			t.reader = bufio.NewReader(t.In)
+		}
+		// A cancelled read may not have started before its caller returns.
+		// Check under the lock so it cannot begin stealing input after a later
+		// prompt has acquired the terminal.
+		if err := ctx.Err(); err != nil {
+			t.mu.Unlock()
+			ch <- result{err: err}
+			return
+		}
+		recorded := &recordingByteReader{r: t.reader}
+		p, err := readSecret(recorded)
+		if ctx.Err() != nil && len(recorded.read) > 0 {
+			// The blocking terminal read cannot be interrupted portably. Put
+			// back everything it consumed so the next prompt receives it.
+			t.reader = bufio.NewReader(io.MultiReader(bytes.NewReader(recorded.read), t.reader))
+		}
+		t.mu.Unlock()
+		ch <- result{p, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case r := <-ch:
+		return r.p, r.err
+	}
+}
+
 // readSecret is independent of terminal state so editing/cancellation behavior
 // can be tested without changing the test runner's terminal.
-func readSecret(r *bufio.Reader) ([]byte, error) {
+func readSecret(r interface{ ReadByte() (byte, error) }) ([]byte, error) {
 	var result []byte
 	for {
 		b, err := r.ReadByte()
@@ -160,6 +179,19 @@ func readSecret(r *bufio.Reader) ([]byte, error) {
 			result = append(result, b)
 		}
 	}
+}
+
+type recordingByteReader struct {
+	r    interface{ ReadByte() (byte, error) }
+	read []byte
+}
+
+func (r *recordingByteReader) ReadByte() (byte, error) {
+	b, err := r.r.ReadByte()
+	if err == nil {
+		r.read = append(r.read, b)
+	}
+	return b, err
 }
 
 func (t *Terminal) Confirm(ctx context.Context) (bool, error) {
