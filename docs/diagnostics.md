@@ -217,10 +217,35 @@ DEBUG records are omitted here except where shown.
 
 ## Verification limits
 
+### Native diagnostic-log CI
+
+`.github/workflows/diagnostics-native.yml` runs on pushes, pull requests and
+manual dispatches, independently on `windows-latest` and `macos-latest`.
+Each runner uses checksum-verified Go 1.25.14 and executes
+`go test -race -count=1 -timeout=5m -json ./internal/diagnostics/...`.
+The uncached suite includes archive rotation and retention bounds, exclusive
+writer locking and release, unsafe active/archive/lock destinations, Unix
+0600 permissions, and (on Windows only) `TestLogFileOwnerOnlyACL` for the active
+file, all three archives and the lock sidecar. The Windows job enables
+unprivileged symlinks; both jobs require link-refusal tests to run rather than
+silently skipping them. A failure in one OS does not cancel the other.
+
+Each job preserves its JSON test report for 14 days, including on test failure.
+Inspect the OS-specific job and its report for passing tests and any skips;
+adding this workflow alone is not evidence of a native pass. The reports contain
+synthetic test data, not retained application logs. Run locally on the target OS
+with `make test-diagnostics`, or the equivalent Go command above (no Make
+installation required on Windows).
+
+These jobs are deliberately limited to diagnostic log files. They do not
+validate temporary-credential cleanup or native terminal restoration, and do not
+claim every architecture is covered: the report's `go env GOOS GOARCH` identifies
+the hosted runner architecture.
+
 Native Linux tests cover file modes, rotation, process execution and PTYs.
 macOS/Windows amd64/arm64 binary cross-builds establish compilation only.
-Native Windows ACL tests are supplied but require a Windows runner; neither
-Windows ACL behavior nor macOS runtime behavior is claimed from Linux.
+Windows ACL behavior and macOS runtime behavior require passing results from
+their native jobs; neither is claimed from Linux or from cross-builds.
 No real production database, OAuth/firecall service, real credentials, external
 terminal session, power-loss recovery, or hostile same-account process was used
 for verification. Arbitrary OS/kernel corruption and unavailable output sinks

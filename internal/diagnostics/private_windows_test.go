@@ -2,6 +2,7 @@ package diagnostics
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
 	"testing"
 	"unsafe"
@@ -11,22 +12,45 @@ import (
 
 // Runs only on native Windows; cross-compiling this test is not runtime evidence.
 func TestLogFileOwnerOnlyACL(t *testing.T) {
-	path := filepath.Join(privateTestDir(t), "events.log")
-	s, err := NewSink(&bytes.Buffer{}, path, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.limit = 30
-	for i := 0; i < 20; i++ {
-		if _, err := s.Write([]byte("synthetic\n")); err != nil {
-			t.Fatal(err)
+	for _, existing := range []bool{false, true} {
+		name := "new"
+		if existing {
+			name = "existing"
 		}
-	}
-	if err := s.Close(); err != nil {
-		t.Fatal(err)
-	}
-	for _, suffix := range []string{"", ".1", ".2", ".3", ".lock"} {
-		checkLogACL(t, path+suffix)
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(privateTestDir(t), "events.log")
+			if existing {
+				// os.WriteFile creates files with the parent directory's inherited ACL.
+				// Opening the sink must replace it for every retained file and sidecar.
+				for _, suffix := range []string{"", ".1", ".2", ".3", ".lock"} {
+					if err := os.WriteFile(path+suffix, nil, 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			s, err := NewSink(&bytes.Buffer{}, path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Check repaired archives before rotation could replace them.
+			if existing {
+				for _, suffix := range []string{".1", ".2", ".3"} {
+					checkLogACL(t, path+suffix)
+				}
+			}
+			s.limit = 30
+			for i := 0; i < 20; i++ {
+				if _, err := s.Write([]byte("synthetic\n")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			for _, suffix := range []string{"", ".1", ".2", ".3", ".lock"} {
+				checkLogACL(t, path+suffix)
+			}
+		})
 	}
 }
 
