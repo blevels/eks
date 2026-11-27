@@ -2,3 +2,4 @@
 - [Toolchain constraints](toolchain-constraints.md) — approved target upgrade avoids blocked driver versions; verify the supported compiler target with verified tooling.
 - [HTTP and caching scope](http-and-caching-scope.md) — retries require exponential backoff; cache database results, with token caching deferred.
 - [GitHub CI artifacts](github-ci-artifacts.md) — download artifacts through the authenticated proxy using relative API paths when the CLI follows public API links.
+- [Implementation quality](implementation-quality.md) — prefer the shortest clear, idiomatic path; line count is not a goal, and added structure must justify itself.
