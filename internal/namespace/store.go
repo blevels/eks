@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"eks/internal/config"
+	"eks/internal/diagnostics"
 	_ "github.com/jackc/pgx/v5/stdlib" // Register pgx's database/sql driver.
 )
 
@@ -90,9 +91,12 @@ func Query(mode, target string) (string, []any, error) {
 }
 
 func (s Store) Find(ctx context.Context, mode, target string) (result []Namespace, err error) {
+	ctx, scope := diagnostics.Start(ctx, "database", "query")
+	defer func() { err = scope.End(err, diagnostics.N("row_count", len(result))) }()
 	query, args, err := Query(mode, target)
 	if err != nil {
-		return nil, err
+		_, plan := diagnostics.Start(ctx, "database", "query_plan")
+		return nil, plan.End(err)
 	}
 	ctx, cancel := context.WithTimeout(ctx, s.Timeout)
 	defer cancel()
@@ -101,23 +105,29 @@ func (s Store) Find(ctx context.Context, mode, target string) (result []Namespac
 		return nil, fmt.Errorf("query namespaces: %w", err)
 	}
 	defer func() {
+		_, cleanup := diagnostics.Start(ctx, "database", "rows_close")
 		if e := rows.Close(); e != nil {
-			err = errors.Join(err, fmt.Errorf("close namespace rows: %w", e))
+			err = errors.Join(err, cleanup.End(e))
+		} else {
+			_ = cleanup.End(nil)
 		}
 	}()
 	result = []Namespace{}
 	for rows.Next() {
 		var n Namespace
 		if err := rows.Scan(&n.Name, &n.Environment, &n.ID, &n.Account, &n.Role); err != nil {
-			return nil, fmt.Errorf("decode namespace row: %w", err)
+			_, scan := diagnostics.Start(ctx, "database", "query_scan")
+			return nil, scan.End(err)
 		}
 		if err := n.Validate(); err != nil {
-			return nil, err
+			_, validation := diagnostics.Start(ctx, "database", "query_validation")
+			return nil, validation.End(err)
 		}
 		result = append(result, n)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read namespaces: %w", err)
+		_, iteration := diagnostics.Start(ctx, "database", "query_iteration")
+		return nil, iteration.End(err)
 	}
 	return result, nil
 }

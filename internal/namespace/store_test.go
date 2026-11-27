@@ -55,6 +55,7 @@ func TestQueryAndValidation(t *testing.T) {
 type connector struct {
 	rows                 [][]driver.Value
 	queryErr, errorAfter error
+	closeErr             error
 	seen                 *bool
 }
 
@@ -80,17 +81,18 @@ func (c *conn) QueryContext(ctx context.Context, q string, args []driver.NamedVa
 	if c.c.queryErr != nil {
 		return nil, c.c.queryErr
 	}
-	return &testRows{data: c.c.rows, after: c.c.errorAfter}, nil
+	return &testRows{data: c.c.rows, after: c.c.errorAfter, closeErr: c.c.closeErr}, nil
 }
 
 type testRows struct {
-	data  [][]driver.Value
-	at    int
-	after error
+	data     [][]driver.Value
+	at       int
+	after    error
+	closeErr error
 }
 
 func (r *testRows) Columns() []string { return []string{"name", "env", "id", "account", "role"} }
-func (r *testRows) Close() error      { return nil }
+func (r *testRows) Close() error      { return r.closeErr }
 func (r *testRows) Next(out []driver.Value) error {
 	if r.at == len(r.data) {
 		if r.after != nil {

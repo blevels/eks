@@ -65,8 +65,10 @@ func (e *RequestError) Error() string {
 	}
 }
 
-func (e *RequestError) Unwrap() error { return e.cause }
-func (e *RequestError) Timeout() bool { return e.Category == CategoryTimeout }
+func (e *RequestError) Unwrap() error              { return e.cause }
+func (e *RequestError) DiagnosticError() error     { return e }
+func (e *RequestError) DiagnosticCategory() string { return string(e.Category) }
+func (e *RequestError) Timeout() bool              { return e.Category == CategoryTimeout }
 
 // Temporary implements net.Error without exposing the underlying network error.
 func (e *RequestError) Temporary() bool { return e.retryable }

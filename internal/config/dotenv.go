@@ -3,6 +3,9 @@ package config
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"eks/internal/diagnostics"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -63,18 +66,29 @@ func ReadEnv(r io.Reader) (map[string]string, error) {
 	return values, nil
 }
 
-func loadEnv(path string, explicit bool) (map[string]string, error) {
-	f, err := os.Open(path)
+func loadEnvContext(ctx context.Context, path string, explicit bool) (map[string]string, error) {
+	return loadEnvWith(ctx, path, explicit, func(path string) (io.ReadCloser, error) { return os.Open(path) })
+}
+
+func loadEnvWith(ctx context.Context, path string, explicit bool, open func(string) (io.ReadCloser, error)) (map[string]string, error) {
+	_, opened := diagnostics.Start(ctx, "config", "dotenv_open")
+	f, err := open(path)
 	if os.IsNotExist(err) && !explicit {
+		_ = opened.End(nil)
 		return map[string]string{}, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("open dotenv: %w", err)
+		return nil, opened.End(err)
 	}
+	_ = opened.End(nil)
+	_, read := diagnostics.Start(ctx, "config", "dotenv_read")
 	values, readErr := ReadEnv(f)
+	readErr = read.End(readErr)
+	_, closed := diagnostics.Start(ctx, "config", "dotenv_close")
 	closeErr := f.Close()
+	closeErr = closed.End(closeErr)
 	if readErr != nil {
-		return nil, readErr
+		return nil, errors.Join(readErr, closeErr)
 	}
 	if closeErr != nil {
 		return nil, fmt.Errorf("close dotenv: %w", closeErr)

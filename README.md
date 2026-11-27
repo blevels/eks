@@ -75,6 +75,7 @@ only (`chmod 600 .env` on Unix; restrict file ACLs on Windows).
 | `DURATION_IN_HRS` | `8` |
 | `INTERVAL`, `TIMEOUT`, `COMMAND_TIMEOUT` | `900s`, `15s`, `2m` |
 | `FIRECALL_POLL_INTERVAL`, `FIRECALL_ACTIVATION_TIMEOUT` | `5s`, `2m`; overridden by `--firecall-poll-interval` and `--firecall-activation-timeout` |
+| `EKS_LOG_FORMAT`, `EKS_LOG_SOURCE`, `EKS_LOG_FILE` | `text`, `false`, disabled; diagnostic options described below |
 
 RDS connections always use **TLS verify-full**; configure a trusted RDS CA bundle
 where system trust is insufficient. HTTP uses system certificate trust and
@@ -197,9 +198,11 @@ Failure retries are separate from activation polling: a successful lookup with
 no active match is not an HTTP failure. It returns to the existing activation
 polling loop, which waits the configured polling interval.
 
-HTTP attempt failures are logged on stderr with operation name, attempt number,
-duration, safe category, and HTTP status when available. `--verbose` also shows
-successful attempts and scheduled retry delays. Raw URLs, transport error text,
+HTTP attempt outcomes use the shared schema: retryable failures and scheduled
+retry waits are WARN; terminal failures are ERROR; cancellation is INFO.
+`--verbose` also shows successful attempts and detailed operation starts.
+Attempts include numeric `duration_ms`, `attempt`, `max_attempts`, safe
+`error_category`, and `http_status` (0 if no response). Raw URLs, transport error text,
 headers, credentials, tokens, and request/response bodies are excluded.
 Returned errors preserve safe cancellation/timeout checks without exposing the
 underlying URL-bearing transport error.
@@ -209,12 +212,33 @@ underlying URL-bearing transport error.
 - Human-readable result tables/details go to stdout.
 - Prompts, progress, and `log/slog` diagnostics go to stderr.
 - `--verbose` enables debug diagnostics without printing credentials.
+- `--log-format text|json` selects structured diagnostic text (default) or JSON
+  Lines **independently** of `--json` result output.
+- `--log-source` adds sanitized module-relative caller file/line attribution.
+- `--log-file PATH` opts into owner-only local logs in addition to stderr.
+  Files rotate at 10 MiB with three archives; an empty `.lock` sidecar prevents
+  concurrent writers. Parent directories must already exist and be trusted.
+- Diagnostic records include UTC time, schema version, run/cycle/operation
+  correlation, fixed event/error codes and numeric millisecond durations.
+  No raw errors, SQL, selectors, paths, identity values, or payloads are logged.
 - `--json` emits **JSON Lines** events: `namespaces`, `namespace`,
   `active_firecalls`, `created_firecalls`, and `connected`.
 - JSON mode never prompts or creates a firecall. For production it requires
   `PROD_PASSWORD` and an already active firecall. Namespace ambiguity fails.
 - Raw kconnect output is captured separately and suppressed because it can
   contain secrets or corrupt JSON. Its exit code is retained in diagnostics.
+
+See [the diagnostics guide](docs/diagnostics.md) for the event/test matrix,
+safe fallback and option precedence, local collection, troubleshooting,
+synthetic examples, retention/security policy, and platform verification limits.
+No remote diagnostic export or telemetry is enabled.
+The file sink is synced/closed before the final stderr-only run summary;
+`run.shutdown` is retained in both sinks.
+An explicitly requested file sink that cannot initialize fails startup.
+Any runtime diagnostic sink failure requests orderly cancellation/cleanup and
+exit **1**, even if interruption would otherwise return 130. One structured
+stderr alert is attempted without recursion. Broken output sinks, forced process
+termination, and power loss cannot be given delivery guarantees.
 
 Run `--help` for the complete flag list. Exit codes:
 

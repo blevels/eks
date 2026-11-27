@@ -181,10 +181,21 @@ No further API specification is assumed.
     raw transport errors are not retained in returned chains because they may
     expose URLs or secrets through error inspection. Cancellation and timeout
     remain detectable through safe context sentinels and timeout classification.
-    HTTP attempt diagnostics use the CLI's stderr logger: failures at warning
-    level, successes and retry scheduling at debug level. Read-only retries
+    HTTP attempt diagnostics use the common event contract: recoverable attempts
+    and retry scheduling at warning level, final failures at error, cancellation
+    at info, and successes at debug. Read-only retries
     follow the bounded exponential-backoff policy above; activation polling
     remains separate and does not reset any request deadline.
+16. Diagnostics now share a versioned `slog` schema with run/cycle/operation
+    correlation and safe fixed failure codes. `--log-format`, `--log-source`,
+    and opt-in bounded `--log-file` retention are additive; stdout result formats
+    and ordinary exits are unchanged. A requested sink initialization/runtime
+    failure returns 1, after cleanup where initialized. User refusal is logged
+    as normal cancellation but retains exit 1. No authorization, retries,
+    cache freshness, prompt behavior, credential format, or child arguments were
+    changed for instrumentation. Unknown error text is not emitted, and redaction
+    no longer performs extra decryption. See [diagnostics](docs/diagnostics.md)
+    for catalog, failure ownership, tests, examples, and delivery limits.
 
 ## Verification and remaining risks
 
@@ -200,6 +211,10 @@ cross-builds. Windows-only regression tests now inspect the protected
 owner-rights ACL and inherited file ACL using synthetic credentials, but the
 Linux development environment cannot execute them; native Windows ACL behavior
 and secure password-terminal restoration still need native platform validation.
+Linux PTY diagnostic tests exercise password success, EOF, cancellation, output
+failure and surfaced restoration failure; they do not establish native macOS or
+Windows terminal behavior. New native Windows log-file ACL tests are supplied,
+but are not claimed to have run in this Linux workspace.
 No kconnect binary is installed here, so actual 0.5.24 invocation has not been
 exercised. Real RDS, CyberArk, OAuth/firecall, and EKS access have not been
 exercised with user credentials. The direct subprocess is cancelled; arbitrary

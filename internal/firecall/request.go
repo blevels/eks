@@ -2,6 +2,7 @@ package firecall
 
 import (
 	"context"
+	"eks/internal/diagnostics"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,34 +41,39 @@ func (c *Client) request(ctx context.Context, op operation, method, endpoint, to
 		if err := ctx.Err(); err != nil {
 			return contextError(err)
 		}
-		start := time.Now()
-		status, err := c.attempt(ctx, method, endpoint, token, contentType, body, out)
+		attemptCtx, attemptScope := diagnostics.Start(ctx, "http", "http_attempt")
+		status, err := c.attempt(attemptCtx, method, endpoint, token, contentType, body, out)
 		if ctx.Err() != nil {
 			err = contextError(ctx.Err())
 		}
-		c.logAttempt(ctx, op, attempt, status, time.Since(start), err)
+		numbers := []diagnostics.Number{diagnostics.N("attempt", attempt), diagnostics.N("max_attempts", attempts), diagnostics.N("http_status", status)}
 		if err == nil {
+			_ = attemptScope.End(nil, numbers...)
 			return nil
 		}
 		var failure *RequestError
 		if attempt >= attempts || !errors.As(err, &failure) || !failure.retryable {
-			return err
+			return attemptScope.End(err, numbers...)
 		}
+		// A recoverable attempt is not a terminal primary error.
+		attemptScope.Event("http.retryable_attempt", slog.LevelWarn, numbers...)
 		delay := max(backoff(attempt, c.jitter), time.Until(failure.retryAt))
 		deadline, _ := ctx.Deadline()
 		if delay >= time.Until(deadline) {
 			// Do not shorten a server-mandated delay just to squeeze in a retry.
-			return fmt.Errorf("cannot retry within API deadline: %w", contextError(context.DeadlineExceeded))
+			attemptScope.Event("http.retry_budget_rejected", slog.LevelDebug, numbers...)
+			return attemptScope.End(fmt.Errorf("cannot retry within API deadline: %w", contextError(context.DeadlineExceeded)), numbers...)
 		}
-		if c.Log != nil {
-			c.Log.DebugContext(ctx, "HTTP retry scheduled", "operation", string(op), "attempt", attempt+1, "delay", delay)
-		}
+		attemptScope.Retry(err, numbers...)
+		_, retry := diagnostics.Start(ctx, "http", "retry_wait")
+		retry.Event("http.retry_scheduled", slog.LevelWarn, diagnostics.N("attempt", attempt+1), diagnostics.N("max_attempts", attempts), diagnostics.N("retry_delay_ms", int(delay.Milliseconds())))
 		if err := wait(ctx, delay); err != nil {
 			if ctx.Err() != nil {
-				return contextError(ctx.Err())
+				return retry.End(contextError(ctx.Err()))
 			}
-			return transportError(ctx, err)
+			return retry.End(transportError(ctx, err))
 		}
+		_ = retry.End(nil)
 	}
 }
 
@@ -91,8 +97,12 @@ func (c *Client) attempt(ctx context.Context, method, endpoint, token, contentTy
 	}
 	status = resp.StatusCode
 	defer func() {
+		_, closed := diagnostics.Start(ctx, "http", "response_close")
 		if closeErr := resp.Body.Close(); closeErr != nil {
-			err = errors.Join(err, &RequestError{Category: CategoryClose, StatusCode: status})
+			// A close failure is supplemental and is never silently dropped.
+			err = errors.Join(err, closed.End(&RequestError{Category: CategoryClose, StatusCode: status}))
+		} else {
+			_ = closed.End(nil)
 		}
 	}()
 	if status < 200 || status >= 300 {
@@ -117,24 +127,4 @@ func (c *Client) attempt(ctx context.Context, method, endpoint, token, contentTy
 		return status, &RequestError{Category: CategoryInvalidJSON, StatusCode: status}
 	}
 	return status, nil
-}
-
-func (c *Client) logAttempt(ctx context.Context, op operation, attempt, status int, duration time.Duration, err error) {
-	if c.Log == nil {
-		return
-	}
-	category := "success"
-	level := slog.LevelDebug
-	if err != nil {
-		category, level = "request_failed", slog.LevelWarn
-		var failure *RequestError
-		if errors.As(err, &failure) {
-			category = string(failure.Category)
-		}
-	}
-	attrs := []any{"operation", string(op), "attempt", attempt, "duration", duration, "category", category}
-	if status != 0 {
-		attrs = append(attrs, "status_code", status)
-	}
-	c.Log.Log(ctx, level, "HTTP attempt", attrs...)
 }
