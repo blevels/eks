@@ -20,6 +20,7 @@ type Config struct {
 	OAuthURL, FirecallListURL, FirecallCreateURL, IDPEndpoint                string
 	Region, IDPProvider, EmailDomain, Kconnect, Ticket                       string
 	Interval, Timeout, CommandTimeout                                        time.Duration
+	FirecallPollInterval, FirecallActivationTimeout                          time.Duration
 	Duration                                                                 int
 }
 
@@ -89,10 +90,13 @@ func Parse(args []string, lookup func(string) (string, bool), stderr io.Writer) 
 		fs.StringVar(x.p, x.flag, get(x.env, x.fallback), x.env)
 	}
 	var interval, timeout, commandTimeout, duration string
+	var firecallPollInterval, firecallActivationTimeout string
 	fs.StringVar(&interval, "interval", get("INTERVAL", "900s"), "refresh delay (Go duration or seconds)")
 	fs.StringVar(&timeout, "timeout", get("TIMEOUT", "15s"), "database/HTTP timeout")
 	fs.StringVar(&commandTimeout, "command-timeout", get("COMMAND_TIMEOUT", "2m"), "kconnect timeout")
 	fs.StringVar(&duration, "duration", get("DURATION_IN_HRS", "8"), "firecall duration in hours")
+	fs.StringVar(&firecallPollInterval, "firecall-poll-interval", get("FIRECALL_POLL_INTERVAL", "5s"), "delay between firecall activation checks")
+	fs.StringVar(&firecallActivationTimeout, "firecall-activation-timeout", get("FIRECALL_ACTIVATION_TIMEOUT", "2m"), "total wait for firecall activation")
 	// flag accepts options before positionals; reject trailing arguments explicitly.
 	if err := fs.Parse(args); err != nil {
 		return c, errors.New("invalid command-line options; options must precede the namespace selector")
@@ -140,6 +144,8 @@ func Parse(args []string, lookup func(string) (string, bool), stderr io.Writer) 
 		name string
 	}{
 		{interval, &c.Interval, "interval"}, {timeout, &c.Timeout, "timeout"}, {commandTimeout, &c.CommandTimeout, "command-timeout"},
+		{firecallPollInterval, &c.FirecallPollInterval, "firecall-poll-interval"},
+		{firecallActivationTimeout, &c.FirecallActivationTimeout, "firecall-activation-timeout"},
 	} {
 		v := x.s
 		if _, err := strconv.Atoi(v); err == nil {
@@ -195,6 +201,9 @@ func HTTPS(raw string) error {
 }
 
 func (c Config) ValidateProduction() error {
+	if c.FirecallPollInterval <= 0 || c.FirecallActivationTimeout <= 0 {
+		return errors.New("firecall polling interval and activation timeout must be positive")
+	}
 	for _, x := range []struct{ name, value string }{{"OAUTH_URL", c.OAuthURL}, {"FIRECALL_URL", c.FirecallListURL}, {"FIRECALL_URI", c.FirecallCreateURL}} {
 		if err := HTTPS(x.value); err != nil {
 			return fmt.Errorf("%s: %w", x.name, err)

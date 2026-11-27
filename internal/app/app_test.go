@@ -40,18 +40,28 @@ type fakeFirecall struct {
 	tokenUser, tokenPassword, email string
 	created                         int
 	err                             error
+	listCalls                       int
+	listFn                          func(context.Context, string, string, string) ([]firecall.Active, error)
+	noActivation                    bool
 }
 
 func (f *fakeFirecall) Token(_ context.Context, u, p string) (string, error) {
 	f.tokenUser, f.tokenPassword = u, p
 	return "token", f.err
 }
-func (f *fakeFirecall) List(context.Context, string, string) ([]firecall.Active, error) {
+func (f *fakeFirecall) List(ctx context.Context, token, account, role string) ([]firecall.Active, error) {
+	f.listCalls++
+	if f.listFn != nil {
+		return f.listFn(ctx, token, account, role)
+	}
 	return f.active, f.err
 }
 func (f *fakeFirecall) Create(_ context.Context, _, _, email, _ string, _ int) ([]firecall.Created, error) {
 	f.created++
 	f.email = email
+	if !f.noActivation {
+		f.active = []firecall.Active{{Status: "active"}}
+	}
 	return []firecall.Created{{ID: "42", Status: "SUCCESS"}}, f.err
 }
 
@@ -77,6 +87,7 @@ func fixture() (*App, *fakeConnect, *fakeFirecall, *fakeUI) {
 	ui := &fakeUI{yes: true, password: "production-only"}
 	a := &App{
 		Config: config.Config{Target: "12", Mode: "id", Once: true, Digest: "sha256", Passphrase: "fixture-only",
+			FirecallPollInterval: 5 * time.Second, FirecallActivationTimeout: 2 * time.Minute,
 			EncryptedUser:     "U2FsdGVkX18BAgMEBQYHCE7cMDd4cyD+typtkEMxGBQ=",
 			EncryptedPassword: "U2FsdGVkX18BAgMEBQYHCE7cMDd4cyD+typtkEMxGBQ=",
 			EmailDomain:       "test.com", OAuthURL: "https://idp.invalid/oauth", FirecallListURL: "https://fc.invalid/list", FirecallCreateURL: "https://fc.invalid", Duration: 8},
