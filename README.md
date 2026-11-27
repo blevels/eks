@@ -138,6 +138,37 @@ An active record for that account and role authorizes connection; requester and
 expiration are not checked, and the list contract cannot correlate activation
 to a specific created request ID. See MIGRATION.md for service assumptions.
 
+### In-memory database snapshots
+
+Database discovery results are cached **within one CLI process and one fixed
+database configuration**, keyed by lookup mode (`list`, ID, or name) and the
+exact selector. Complete validated result sets—including successful empty
+results—are reusable; errors, partial results, and canceled queries are not
+cached. A list snapshot does not automatically populate individual ID/name
+entries, since those are separate lookups.
+
+This is a **session snapshot, not a time-based cache**: entries have no TTL.
+Database edits, including environment, account, or role changes, do not update
+already cached results. Restart the CLI to see current data. Code that embeds
+the discovery cache can explicitly invalidate it with `Cache.Clear()`; no new
+interactive refresh command is introduced. An already selected connection
+retains its selected namespace until a new discovery/selection is performed,
+as before.
+
+The cache retains up to **128 distinct lookup result sets**, evicting the
+least-recently-used entry when full; a later lookup of an evicted key queries
+again. This limits entry count, not total rows or bytes—large result sets are
+kept complete. Callers receive independent slice copies. Concurrent misses are
+serialized with cancellable waits to avoid duplicate queries, while cache hits
+remain available during an outstanding query. Invalidation prevents older
+in-flight queries from repopulating the cache.
+
+Only database discovery records are cached. OAuth tokens, decrypted credentials,
+and firecall authorization are not cached; every production connection still
+requires live firecall authorization. The normal connection-refresh loop already
+queries discovery once per session, so the cache avoids **repeated identical
+lookups**, not queries that previously ran on every connection refresh.
+
 ### HTTP diagnostics and retries
 
 The client reuses one HTTP client during a run. Each logical HTTP operation has
