@@ -1,0 +1,52 @@
+name: Native diagnostic log safety
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostics:
+    name: Diagnostic logs (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      GOTOOLCHAIN: go1.25.14
+      GOSUMDB: sum.golang.org
+      # Native CI must exercise link refusal, not skip it for lack of privilege.
+      EKS_REQUIRE_LOG_SYMLINK_TEST: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.14"
+          cache: true
+      - name: Allow unprivileged Windows symlinks
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock' -Force | Out-Null
+          New-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock' -Name AllowDevelopmentWithoutDevLicense -Value 1 -PropertyType DWord -Force | Out-Null
+      - name: Run native diagnostics tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p generated-artifacts
+          go version
+          go env GOOS GOARCH
+          go test -race -count=1 -timeout=5m -json ./internal/diagnostics/... | tee generated-artifacts/diagnostics-native.jsonl
+      - name: Preserve native test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-${{ matrix.os }}
+          path: generated-artifacts/diagnostics-native.jsonl
+          if-no-files-found: warn
+          retention-days: 14

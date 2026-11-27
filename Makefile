@@ -5,13 +5,17 @@ OUT ?= generated-artifacts
 STATICCHECK ?= $(GO) run honnef.co/go/tools/cmd/staticcheck@v0.7.0
 LDFLAGS = -s -w -X main.version=$(VERSION)
 
-.PHONY: build test lint fmt check-format cross-compile check clean
+.PHONY: build test test-diagnostics lint fmt check-format cross-compile check clean
 build:
 	@mkdir -p $(OUT)
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(OUT)/eks ./cmd/eks
 
 test:
 	$(GO) test -race ./...
+
+# Run on the host OS: cross-compilation is not filesystem runtime evidence.
+test-diagnostics:
+	$(GO) test -race -count=1 -timeout=5m -v ./internal/diagnostics/...
 
 fmt:
 	gofmt -w cmd internal

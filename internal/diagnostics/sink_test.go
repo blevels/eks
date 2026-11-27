@@ -160,32 +160,66 @@ func TestSinkFailuresCancelOnceAndRemainBounded(t *testing.T) {
 }
 
 func TestSinkRefusesUnsafeDestinations(t *testing.T) {
-	dir := privateTestDir(t)
-	target := filepath.Join(dir, "target")
-	if err := os.WriteFile(target, []byte("untouched"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	for _, path := range []string{dir, filepath.Join(dir, "missing", "events")} {
-		if _, err := NewSink(&bytes.Buffer{}, path, nil); err == nil {
-			t.Fatal("unsafe destination accepted", path)
+	for _, suffix := range []string{"", ".lock", ".1", ".2", ".3"} {
+		for _, kind := range []string{"directory", "symlink", "hardlink"} {
+			t.Run(kind+"/events.log"+suffix, func(t *testing.T) {
+				dir := privateTestDir(t)
+				path := filepath.Join(dir, "events.log")
+				target := filepath.Join(dir, "target")
+				if err := os.WriteFile(target, []byte("untouched"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				var err error
+				switch kind {
+				case "directory":
+					err = os.Mkdir(path+suffix, 0700)
+				case "symlink":
+					err = os.Symlink(target, path+suffix)
+					checkLogSymlinkSupport(t, err)
+				case "hardlink":
+					err = os.Link(target, path+suffix)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				requireLogDestinationRejected(t, path)
+				data, err := os.ReadFile(target)
+				if err != nil || string(data) != "untouched" {
+					t.Fatal("unsafe target modified", string(data), err)
+				}
+			})
 		}
 	}
-	link := filepath.Join(dir, "link")
-	if err := os.Symlink(target, link); err == nil {
-		if _, err := NewSink(&bytes.Buffer{}, link, nil); err == nil {
-			t.Fatal("symlink accepted")
+	t.Run("missing_parent", func(t *testing.T) {
+		requireLogDestinationRejected(t, filepath.Join(privateTestDir(t), "missing", "events.log"))
+	})
+	t.Run("symlink_parent", func(t *testing.T) {
+		dir := privateTestDir(t)
+		parent := filepath.Join(dir, "parent")
+		checkLogSymlinkSupport(t, os.Symlink(dir, parent))
+		requireLogDestinationRejected(t, filepath.Join(parent, "events.log"))
+		if _, err := os.Stat(filepath.Join(dir, "events.log")); !os.IsNotExist(err) {
+			t.Fatal("created log through symlink parent", err)
 		}
+	})
+}
+
+func checkLogSymlinkSupport(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		return
 	}
-	data, err := os.ReadFile(target)
-	if err != nil || string(data) != "untouched" {
-		t.Fatal(string(data), err)
+	if runtime.GOOS == "windows" && errors.Is(err, os.ErrPermission) && os.Getenv("EKS_REQUIRE_LOG_SYMLINK_TEST") != "1" {
+		t.Skipf("Windows symlink privilege unavailable: %v", err)
 	}
-	hard := filepath.Join(dir, "hard")
-	if err := os.Link(target, hard); err == nil {
-		if s, err := NewSink(&bytes.Buffer{}, hard, nil); err == nil {
-			_ = s.Close()
-			t.Fatal("hardlink accepted")
-		}
+	t.Fatal(err)
+}
+
+func requireLogDestinationRejected(t *testing.T, path string) {
+	t.Helper()
+	if s, err := NewSink(&bytes.Buffer{}, path, nil); err == nil {
+		_ = s.Close()
+		t.Fatal("unsafe destination accepted")
 	}
 }
 

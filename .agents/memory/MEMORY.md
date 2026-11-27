@@ -1,3 +1,4 @@
 - [Migration baseline](migration-baseline.md) — treat the supplied shell as a retyped working POC; retain encrypted dotenv credentials and production-only firecall.
 - [Toolchain constraints](toolchain-constraints.md) — approved target upgrade avoids blocked driver versions; verify the supported compiler target with verified tooling.
 - [HTTP and caching scope](http-and-caching-scope.md) — retries require exponential backoff; cache database results, with token caching deferred.
+- [GitHub CI artifacts](github-ci-artifacts.md) — download artifacts through the authenticated proxy using relative API paths when the CLI follows public API links.
