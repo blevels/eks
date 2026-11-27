@@ -1,0 +1,16 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "PoV0Q6mxdOStnxYYaCLoA"
+uri = "file://docs/credential-storage-proposal.md"
+type = "text"
+title = "Credential storage design for review"
+description = "Opt-in authenticated encryption, legacy compatibility, migration safety, and decisions requiring approval. No credential code or real secrets were changed."
+logical_id = "204bbab8-0717-4a2f-aaba-f0b738881031"
+content_hash = "sha256:b1a36246cbe09a9761ffd00032c201958886e929b96bea768f03e8498c11e132"
+size = 16128
+mtime_ms = 1795742288570
+storage_uri = "gcs://replit-rams-assets-kirk/rams/assets/repl:8d373dba-6f58-49e0-888c-8629d35805f0/204bbab8-0717-4a2f-aaba-f0b738881031/ea8789ad-b2a8-4158-b88c-cb318ad83ef9"
+storage_version_token = "1795742302019427"
+content_type = "text/markdown"
