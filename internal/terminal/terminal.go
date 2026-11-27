@@ -5,9 +5,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"eks/internal/diagnostics"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -19,10 +21,18 @@ import (
 )
 
 type Terminal struct {
-	In     *os.File
-	Out    io.Writer
-	reader *bufio.Reader
-	mu     sync.Mutex
+	In      *os.File
+	Out     io.Writer
+	reader  *bufio.Reader
+	mu      sync.Mutex
+	restore func(int, *term.State) error
+}
+
+func (t *Terminal) restoreState(fd int, state *term.State) error {
+	if t.restore != nil {
+		return t.restore(fd, state)
+	}
+	return term.Restore(fd, state)
 }
 
 func (t *Terminal) line(ctx context.Context, prompt string) (string, error) {
@@ -60,7 +70,9 @@ func (t *Terminal) line(ctx context.Context, prompt string) (string, error) {
 	}
 }
 
-func (t *Terminal) Choose(ctx context.Context, items []namespace.Namespace) (int, error) {
+func (t *Terminal) Choose(ctx context.Context, items []namespace.Namespace) (result int, err error) {
+	ctx, scope := diagnostics.Start(ctx, "terminal", "selection")
+	defer func() { err = scope.End(err) }()
 	for i, n := range items {
 		if _, err := fmt.Fprintf(t.Out, "%d) %s|%s|%s|%s\n", i+1, n.Name, n.Account, n.Role, n.Environment); err != nil {
 			return 0, err
@@ -75,13 +87,16 @@ func (t *Terminal) Choose(ctx context.Context, items []namespace.Namespace) (int
 		if err == nil && i >= 1 && i <= len(items) {
 			return i - 1, nil
 		}
+		scope.Event("terminal.invalid_selection", slog.LevelDebug)
 		if _, err := fmt.Fprintln(t.Out, "Invalid selection. Please choose a valid number."); err != nil {
 			return 0, err
 		}
 	}
 }
 
-func (t *Terminal) Password(ctx context.Context) (string, error) {
+func (t *Terminal) Password(ctx context.Context) (result string, err error) {
+	ctx, scope := diagnostics.Start(ctx, "terminal", "password")
+	defer func() { err = scope.End(err) }()
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -96,11 +111,14 @@ func (t *Terminal) Password(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("read terminal state: %w", err)
 	}
 	if _, err := fmt.Fprint(t.Out, "Enter production authorization (CyberArk) password: "); err != nil {
-		return "", errors.Join(err, term.Restore(fd, state))
+		_, restore := diagnostics.Start(ctx, "terminal", "restore")
+		return "", errors.Join(err, restore.End(t.restoreState(fd, state)))
 	}
 	p, readErr := t.readPassword(ctx)
 	password, err := string(p), readErr
-	restoreErr := term.Restore(fd, state)
+	_, restore := diagnostics.Start(ctx, "terminal", "restore")
+	restoreErr := t.restoreState(fd, state)
+	restoreErr = restore.End(restoreErr)
 	_, writeErr := fmt.Fprintln(t.Out)
 	if err = errors.Join(err, restoreErr, writeErr); err != nil {
 		return "", fmt.Errorf("read production password: %w", err)
@@ -194,7 +212,9 @@ func (r *recordingByteReader) ReadByte() (byte, error) {
 	return b, err
 }
 
-func (t *Terminal) Confirm(ctx context.Context) (bool, error) {
+func (t *Terminal) Confirm(ctx context.Context) (result bool, err error) {
+	ctx, scope := diagnostics.Start(ctx, "terminal", "confirmation")
+	defer func() { err = scope.End(err) }()
 	for {
 		s, err := t.line(ctx, "Would you like to open a firecall request for this environment? (Y/N): ")
 		if err != nil {
@@ -206,12 +226,15 @@ func (t *Terminal) Confirm(ctx context.Context) (bool, error) {
 		case "n", "no":
 			return false, nil
 		}
+		scope.Event("terminal.invalid_confirmation", slog.LevelDebug)
 		if _, err := fmt.Fprintln(t.Out, "Invalid input. Please enter Y or N."); err != nil {
 			return false, err
 		}
 	}
 }
-func (t *Terminal) Ticket(ctx context.Context) (string, error) {
+func (t *Terminal) Ticket(ctx context.Context) (result string, err error) {
+	ctx, scope := diagnostics.Start(ctx, "terminal", "ticket")
+	defer func() { err = scope.End(err) }()
 	s, err := t.line(ctx, "Enter a valid production CM # or SNOW INCIDENT #: ")
 	if err != nil {
 		return "", err

@@ -310,7 +310,7 @@ func TestHTTPDiagnosticsExcludeSensitiveDetails(t *testing.T) {
 			t.Fatalf("sensitive diagnostic %s", text)
 		}
 	}
-	for _, want := range []string{`"operation":"list_firecalls"`, `"attempt":1`, `"attempt":2`, `"attempt":3`, `"duration":`, `"status_code":503`, `"status_code":200`, `"category":"network"`, `"category":"http_status"`, `"category":"success"`} {
+	for _, want := range []string{`"operation":"list_firecalls"`, `"attempt":1`, `"attempt":2`, `"attempt":3`, `"duration_ms":`, `"http_status":503`, `"http_status":200`, `"event":"http.retryable_attempt"`, `"status":"success"`} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %s in %s", want, text)
 		}

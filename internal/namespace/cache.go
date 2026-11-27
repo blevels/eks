@@ -3,7 +3,9 @@ package namespace
 import (
 	"container/list"
 	"context"
+	"eks/internal/diagnostics"
 	"errors"
+	"log/slog"
 	"slices"
 	"sync"
 )
@@ -41,6 +43,8 @@ type Cache struct {
 	entries    map[cacheKey]*list.Element
 	recent     list.List
 	generation uint64
+	// Diagnostics is used only for context-free explicit invalidation.
+	Diagnostics *diagnostics.Diagnostics
 }
 
 // NewCache wraps one fixed database discovery source. maxEntries must be positive.
@@ -53,7 +57,9 @@ func NewCache(source finder, maxEntries int) (*Cache, error) {
 	return c, nil
 }
 
-func (c *Cache) Find(ctx context.Context, mode, target string) ([]Namespace, error) {
+func (c *Cache) Find(ctx context.Context, mode, target string) (result []Namespace, err error) {
+	ctx, scope := diagnostics.Start(ctx, "cache", "cache_lookup")
+	defer func() { err = scope.End(err) }()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -65,17 +71,22 @@ func (c *Cache) Find(ctx context.Context, mode, target string) ([]Namespace, err
 	items, hit := c.lookup(key)
 	c.mu.Unlock()
 	if hit {
+		scope.Event("cache.hit", slog.LevelDebug)
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		return items, nil
 	}
+	scope.Event("cache.miss", slog.LevelDebug)
+	_, waiting := diagnostics.Start(ctx, "cache", "cache_wait")
+	waiting.Event("cache.wait", slog.LevelDebug)
 
 	select {
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, waiting.End(ctx.Err())
 	case <-c.gate:
 	}
+	_ = waiting.End(nil)
 	defer func() { c.gate <- struct{}{} }()
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -86,12 +97,13 @@ func (c *Cache) Find(ctx context.Context, mode, target string) ([]Namespace, err
 	generation := c.generation
 	c.mu.Unlock()
 	if hit {
+		scope.Event("cache.hit", slog.LevelDebug)
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		return items, nil
 	}
-	items, err := c.source.Find(ctx, mode, target)
+	items, err = c.source.Find(ctx, mode, target)
 	if err != nil {
 		// Drop even nonempty partial results; errors are never cache entries.
 		return nil, err
@@ -99,21 +111,36 @@ func (c *Cache) Find(ctx context.Context, mode, target string) ([]Namespace, err
 	snapshot := slices.Clone(items)
 	for _, n := range snapshot {
 		if err := n.Validate(); err != nil {
-			return nil, err
+			_, validation := diagnostics.Start(ctx, "cache", "cache_validation")
+			return nil, validation.End(err)
 		}
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if err := ctx.Err(); err != nil {
+		c.mu.Unlock()
 		return nil, err
 	}
+	suppressed, evicted := generation != c.generation, false
 	if generation == c.generation {
 		c.entries[key] = c.recent.PushFront(cacheEntry{key: key, items: snapshot})
 		if len(c.entries) > c.limit {
+			evicted = true
 			oldest := c.recent.Back()
 			delete(c.entries, oldest.Value.(cacheEntry).key)
 			c.recent.Remove(oldest)
 		}
+	}
+	c.mu.Unlock()
+	if suppressed {
+		scope.Event("cache.suppressed", slog.LevelDebug)
+	} else {
+		scope.Event("cache.fill", slog.LevelDebug, diagnostics.N("row_count", len(snapshot)))
+		if len(snapshot) == 0 {
+			scope.Event("cache.empty", slog.LevelDebug, diagnostics.N("row_count", 0))
+		}
+	}
+	if evicted {
+		scope.Event("cache.eviction", slog.LevelDebug)
 	}
 	return slices.Clone(snapshot), nil
 }
@@ -133,8 +160,12 @@ func (c *Cache) lookup(key cacheKey) ([]Namespace, bool) {
 // Subsequent lookups query afresh. Restarting the CLI also discards the cache.
 func (c *Cache) Clear() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.generation++
 	c.entries = make(map[cacheKey]*list.Element)
 	c.recent.Init()
+	c.mu.Unlock()
+	ctx := diagnostics.With(context.Background(), c.Diagnostics)
+	_, scope := diagnostics.Start(ctx, "cache", "cache_clear")
+	scope.Event("cache.clear", slog.LevelDebug)
+	_ = scope.End(nil)
 }

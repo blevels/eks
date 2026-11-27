@@ -3,6 +3,7 @@ package firecall
 
 import (
 	"context"
+	"eks/internal/diagnostics"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -73,7 +74,10 @@ func (c *Created) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func (c *Client) Token(ctx context.Context, username, password string) (string, error) {
+func (c *Client) Token(ctx context.Context, username, password string) (result string, err error) {
+	ctx = diagnostics.WithLogger(ctx, c.Log)
+	ctx, scope := diagnostics.Start(ctx, "http", "oauth_token")
+	defer func() { err = scope.End(err) }()
 	form := url.Values{"client_id": {username}, "client_secret": {password}, "grant_type": {"client_credentials"}, "scope": {"AppIdClaimsTrust"}}
 	var response struct {
 		Token string `json:"access_token"`
@@ -90,7 +94,10 @@ func (c *Client) Token(ctx context.Context, username, password string) (string, 
 	return response.Token, nil
 }
 
-func (c *Client) List(ctx context.Context, token, account, roleARN string) ([]Active, error) {
+func (c *Client) List(ctx context.Context, token, account, roleARN string) (result []Active, err error) {
+	ctx = diagnostics.WithLogger(ctx, c.Log)
+	ctx, scope := diagnostics.Start(ctx, "http", "list_firecalls")
+	defer func() { err = scope.End(err, diagnostics.N("row_count", len(result))) }()
 	var all []Active
 	if err := c.request(ctx, opList, http.MethodGet, c.ListURL, token, "", nil, &all); err != nil {
 		return nil, fmt.Errorf("list firecalls: %w", err)
@@ -106,7 +113,10 @@ func (c *Client) List(ctx context.Context, token, account, roleARN string) ([]Ac
 	return found, nil
 }
 
-func (c *Client) Create(ctx context.Context, token, arn, email, ticket string, duration int) ([]Created, error) {
+func (c *Client) Create(ctx context.Context, token, arn, email, ticket string, duration int) (result []Created, err error) {
+	ctx = diagnostics.WithLogger(ctx, c.Log)
+	ctx, scope := diagnostics.Start(ctx, "http", "create_firecall")
+	defer func() { err = scope.End(err, diagnostics.N("row_count", len(result))) }()
 	if strings.TrimSpace(ticket) == "" {
 		return nil, errors.New("a change/incident ticket is required")
 	}

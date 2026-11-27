@@ -10,9 +10,14 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"context"
+	"eks/internal/diagnostics"
 )
 
 type Config struct {
+	LogFormat, LogFile                                                       string
+	LogSource                                                                bool
 	Target, Mode, EnvFile                                                    string
 	List, Once, JSON, Verbose, Help, Version                                 bool
 	DBHost, DBPort, DBUser, DBName, DBPassword, DBRootCert                   string
@@ -26,7 +31,13 @@ type Config struct {
 
 // Parse does not mutate the process environment. Lookup is injectable for tests.
 func Parse(args []string, lookup func(string) (string, bool), stderr io.Writer) (Config, error) {
-	c := Config{EnvFile: ".env"}
+	return ParseContext(context.Background(), args, lookup, stderr)
+}
+
+func ParseContext(ctx context.Context, args []string, lookup func(string) (string, bool), stderr io.Writer) (c Config, err error) {
+	ctx, scope := diagnostics.Start(ctx, "config", "parse")
+	defer func() { err = scope.End(err) }()
+	c = Config{EnvFile: ".env"}
 	// Locate only the dotenv selector before parsing defaults from that file.
 	explicit := false
 	for i, a := range args {
@@ -51,7 +62,7 @@ func Parse(args []string, lookup func(string) (string, bool), stderr io.Writer) 
 			return c, nil
 		}
 	}
-	values, err := loadEnv(c.EnvFile, explicit)
+	values, err := loadEnvContext(ctx, c.EnvFile, explicit)
 	if err != nil {
 		return c, err
 	}
@@ -73,6 +84,10 @@ func Parse(args []string, lookup func(string) (string, bool), stderr io.Writer) 
 	fs.BoolVar(&c.Once, "once", false, "connect once")
 	fs.BoolVar(&c.JSON, "json", false, "emit JSON records; never prompt")
 	fs.BoolVar(&c.Verbose, "verbose", false, "debug diagnostics on stderr")
+	fs.StringVar(&c.LogFormat, "log-format", get("EKS_LOG_FORMAT", "text"), "text or json diagnostics")
+	fs.StringVar(&c.LogFile, "log-file", get("EKS_LOG_FILE", ""), "optional private rotating log")
+	sourceDefault, sourceErr := strconv.ParseBool(get("EKS_LOG_SOURCE", "false"))
+	fs.BoolVar(&c.LogSource, "log-source", sourceDefault, "include sanitized source location")
 	for _, x := range []struct {
 		p                   *string
 		flag, env, fallback string
@@ -100,6 +115,15 @@ func Parse(args []string, lookup func(string) (string, bool), stderr io.Writer) 
 	// flag accepts options before positionals; reject trailing arguments explicitly.
 	if err := fs.Parse(args); err != nil {
 		return c, errors.New("invalid command-line options; options must precede the namespace selector")
+	}
+	sourceExplicit := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "log-source" {
+			sourceExplicit = true
+		}
+	})
+	if (sourceErr != nil && !sourceExplicit) || (c.LogFormat != "text" && c.LogFormat != "json") {
+		return c, errors.New("invalid logging configuration")
 	}
 	if c.Target != "" && name != "" {
 		return c, errors.New("--id and --name are mutually exclusive")

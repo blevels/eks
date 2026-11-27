@@ -9,13 +9,14 @@ import (
 	"testing"
 
 	"eks/internal/config"
+	"eks/internal/diagnostics"
 )
 
 func TestExitCodes(t *testing.T) {
 	for _, tt := range []struct {
 		err  error
 		want int
-	}{{nil, 0}, {errors.New("runtime"), 1}, {context.DeadlineExceeded, 1}, {context.Canceled, 130}} {
+	}{{nil, 0}, {errors.New("runtime"), 1}, {context.DeadlineExceeded, 1}, {context.Canceled, 130}, {diagnostics.Declined(), 1}} {
 		if got := ExitCode(tt.err); got != tt.want {
 			t.Fatal(got, tt.want)
 		}
