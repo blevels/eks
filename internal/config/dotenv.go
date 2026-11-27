@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"eks/internal/diagnostics"
 	"errors"
 	"fmt"
 	"io"
@@ -12,10 +11,14 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"eks/internal/diagnostics"
 )
 
-// ReadEnv parses a deliberately small dotenv grammar. No shell expansion,
-// command substitution, or multiline values are executed or interpreted.
+// ReadEnv reads at most 1 MiB from r and returns literal dotenv key/value pairs.
+// It accepts comments, optional export, and single/double quoting, but performs
+// no shell expansion or multiline evaluation. Malformed/duplicate keys and I/O
+// failures return an error; r remains owned by the caller and is not closed.
 func ReadEnv(r io.Reader) (map[string]string, error) {
 	data, err := io.ReadAll(io.LimitReader(r, 1024*1024+1))
 	if err != nil {
@@ -66,10 +69,16 @@ func ReadEnv(r io.Reader) (map[string]string, error) {
 	return values, nil
 }
 
+// loadEnvContext opens, parses, and closes path with diagnostics carried by ctx.
+// A missing implicit default returns an empty map; an explicit missing file or
+// an open/read/parse/close failure returns an error. Process environment is unchanged.
 func loadEnvContext(ctx context.Context, path string, explicit bool) (map[string]string, error) {
 	return loadEnvWith(ctx, path, explicit, func(path string) (io.ReadCloser, error) { return os.Open(path) })
 }
 
+// loadEnvWith implements loadEnvContext with an injected opener for I/O tests.
+// It owns and closes the returned reader, preserving both read and close errors
+// while diagnostic scopes prevent raw file contents/paths from escaping.
 func loadEnvWith(ctx context.Context, path string, explicit bool, open func(string) (io.ReadCloser, error)) (map[string]string, error) {
 	_, opened := diagnostics.Start(ctx, "config", "dotenv_open")
 	f, err := open(path)

@@ -121,6 +121,15 @@ characters are names; shorter values are IDs, preserving the POC rule. Explicit
 `--id`/`--name` bypass that heuristic. Multiple rows prompt for selection; JSON
 mode refuses ambiguity. `list` never decrypts credentials or invokes kconnect.
 
+Flags follow standard Go `flag` syntax: `--` ends option parsing, repeated
+options use the last value, and a string option consumes its next operand even
+when that operand starts with `--`. Help/version are offline only when parsed
+as flags; they do not hide unknown flags or missing operands. Explicit `--id`
+and `--name` cannot be combined or set to an empty string.
+
+The [configuration pilot notes](docs/configuration-pilot.md) record the parsing
+contract, intentional corrections, and the before/after design.
+
 Without `--once`, successful connection cycles repeat with a delay of 900 seconds
 after each connection completes. Errors stop the loop. Ctrl-C / SIGTERM cancels
 network calls, the active direct subprocess, terminal waits, and refresh waits.

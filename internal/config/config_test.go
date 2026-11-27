@@ -18,6 +18,7 @@ func parse(t *testing.T, args []string, env map[string]string) (Config, error) {
 }
 
 func TestParse(t *testing.T) {
+	t.Chdir(t.TempDir())
 	for _, tt := range []struct {
 		name         string
 		args         []string
@@ -82,6 +83,7 @@ func TestPrecedenceAndDefaults(t *testing.T) {
 }
 
 func TestMissingFilesAndSettings(t *testing.T) {
+	t.Chdir(t.TempDir())
 	if _, err := parse(t, []string{"--env-file", filepath.Join(t.TempDir(), "missing"), "list"}, environment()); err == nil {
 		t.Fatal("missing explicit file accepted")
 	}

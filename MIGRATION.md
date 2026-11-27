@@ -196,6 +196,12 @@ No further API specification is assumed.
     changed for instrumentation. Unknown error text is not emitted, and redaction
     no longer performs extra decryption. See [diagnostics](docs/diagnostics.md)
     for catalog, failure ownership, tests, examples, and delivery limits.
+17. Configuration now uses one standard flag parse instead of preliminary
+    env-file/help/version scans. String operands and `--` are respected,
+    help/version no longer hide invalid option syntax, and explicit selectors
+    are checked for conflict/emptiness by presence. Defaults, source precedence,
+    dotenv grammar, diagnostic events, and validation applicability remain.
+    See the [configuration pilot](docs/configuration-pilot.md) for examples.
 
 ## Verification and remaining risks
 

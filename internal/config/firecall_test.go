@@ -6,6 +6,7 @@ import (
 )
 
 func TestFirecallPollingConfiguration(t *testing.T) {
+	t.Chdir(t.TempDir())
 	c, err := parse(t, []string{"12"}, environment())
 	if err != nil || c.FirecallPollInterval != 5*time.Second || c.FirecallActivationTimeout != 2*time.Minute {
 		t.Fatal(c, err)

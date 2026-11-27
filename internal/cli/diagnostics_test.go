@@ -202,3 +202,61 @@ func TestCLIHelpVersionOutputAndDependencyFailures(t *testing.T) {
 		t.Fatal("missing executable validation success", stderr.String())
 	}
 }
+
+func TestConfigurationParsingIntegration(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		args     []string
+		code     int
+		help     bool
+		database bool
+	}{
+		{name: "unknown with help", args: []string{"--help", "--CANARY-unknown=CANARY"}, code: 2},
+		{name: "missing operand with version", args: []string{"--version", "--ticket"}, code: 2},
+		{name: "version is a ticket operand", args: []string{"--ticket", "--version"}, code: 2},
+		{name: "empty id with name", args: []string{"--id=", "--name=ab"}, code: 2},
+		{name: "trailing help", args: []string{"list", "--help"}, code: 2},
+		{name: "offline missing dotenv", args: []string{"--env-file=CANARY-missing", "--help"}, help: true},
+		{name: "help wins when both true", args: []string{"--version", "--help"}, help: true},
+		{name: "list with version operand", args: []string{"--ticket", "--version", "--json", "--log-format=json", "list"}, database: true},
+		{name: "list after terminator", args: []string{"--json", "--", "list"}, database: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			args := cliArgs(t)
+			args = append(args[:len(args)-1], tt.args...)
+			deps := cliDeps(testConnector{})
+			open := deps.open
+			opened := false
+			deps.open = func(c config.Config) (*sql.DB, error) {
+				opened = true
+				return open(c)
+			}
+			deps.lookupPath = func(string) (string, error) {
+				t.Fatal("configuration test accessed executable dependency")
+				return "", nil
+			}
+			var out, stderr bytes.Buffer
+			code := runWith(context.Background(), args, "synthetic-version", os.Stdin, &out, &stderr, deps)
+			if code != tt.code || opened != tt.database {
+				t.Fatalf("code=%d opened=%v; want code=%d opened=%v", code, opened, tt.code, tt.database)
+			}
+			if strings.Contains(stderr.String(), "CANARY") {
+				t.Fatal("configuration input escaped into diagnostics")
+			}
+			if tt.help {
+				if !strings.HasPrefix(out.String(), "Usage:") {
+					t.Fatal("help did not take the offline output path")
+				}
+			} else if tt.database {
+				var result struct {
+					Event string `json:"event"`
+				}
+				if err := json.Unmarshal(out.Bytes(), &result); err != nil || result.Event != "namespaces" {
+					t.Fatal("configuration change corrupted JSON result output", err)
+				}
+			} else if out.Len() != 0 {
+				t.Fatal("usage failure wrote to result output")
+			}
+		})
+	}
+}
