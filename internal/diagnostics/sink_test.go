@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -61,6 +63,145 @@ func TestSinkRotationPermissionsAndBounds(t *testing.T) {
 	}
 	if _, err := os.Stat(path + ".4"); !os.IsNotExist(err) {
 		t.Fatal("unbounded archives")
+	}
+}
+
+func TestSinkConcurrentWritesDuringRotation(t *testing.T) {
+	const (
+		writers        = 8
+		perWriter      = 40
+		recordsPerFile = 5
+		retainedFiles  = 4
+		recordBytes    = 256
+	)
+	type record struct {
+		Writer   int    `json:"writer"`
+		Sequence int    `json:"sequence"`
+		Payload  string `json:"payload"`
+	}
+
+	// Fixed-width records make the retained suffix and byte bounds exact,
+	// regardless of the order in which writers acquire the sink's lock.
+	var records [writers][perWriter][]byte
+	expected := make(map[record][]byte, writers*perWriter)
+	for writer := range writers {
+		for sequence := range perWriter {
+			r := record{writer, sequence, strings.Repeat(fmt.Sprintf("%02d:%02d|", writer, sequence), 24)}
+			data, err := json.Marshal(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// JSON numbers vary in width; pad with legal trailing whitespace.
+			if len(data) >= recordBytes {
+				t.Fatalf("synthetic record exceeds %d-byte fixture size", recordBytes)
+			}
+			data = append(data, bytes.Repeat([]byte(" "), recordBytes-len(data)-1)...)
+			data = append(data, '\n')
+			records[writer][sequence] = data
+			expected[r] = data
+		}
+	}
+
+	path := filepath.Join(privateTestDir(t), "events.log")
+	var stderr bytes.Buffer
+	s, err := NewSink(&stderr, path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	s.limit = int64(recordsPerFile * recordBytes)
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(writers)
+	for writer := range writers {
+		go func() {
+			defer wg.Done()
+			<-start
+			for sequence := range perWriter {
+				data := records[writer][sequence]
+				if n, err := s.Write(data); err != nil || n != len(data) {
+					t.Errorf("writer %d record %d: Write = (%d, %v), want (%d, nil)", writer, sequence, n, err, len(data))
+					return
+				}
+				runtime.Gosched()
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	// Close only after every writer exits; cleanup also checks repeated Close.
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if s.Failed() || s.Failure() != nil {
+		t.Fatal("concurrent writes or close marked the sink failed")
+	}
+	if t.Failed() {
+		return
+	}
+
+	checkRecords := func(name string, data []byte, want int) {
+		t.Helper()
+		if !bytes.HasSuffix(data, []byte("\n")) {
+			t.Fatalf("%s: missing final record delimiter", name)
+		}
+		lines := bytes.Split(bytes.TrimSuffix(data, []byte("\n")), []byte("\n"))
+		if len(lines) != want {
+			t.Fatalf("%s: got %d records, want %d", name, len(lines), want)
+		}
+		seen := make(map[record]bool, want)
+		for _, line := range lines {
+			var r record
+			if err := json.Unmarshal(line, &r); err != nil {
+				t.Fatalf("%s: incomplete JSON record: %v", name, err)
+			}
+			original, ok := expected[r]
+			if !ok || !bytes.Equal(line, bytes.TrimSuffix(original, []byte("\n"))) {
+				t.Fatalf("%s: unknown or corrupted record: %+v", name, r)
+			}
+			if seen[r] {
+				t.Fatalf("%s: duplicate record from writer %d sequence %d", name, r.Writer, r.Sequence)
+			}
+			seen[r] = true
+		}
+	}
+	checkRecords("stderr", stderr.Bytes(), writers*perWriter)
+
+	var retained []byte
+	// Archives are numbered newest first; read them in chronological order.
+	for _, suffix := range []string{".3", ".2", ".1", ""} {
+		name := path + suffix
+		st, err := os.Lstat(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !st.Mode().IsRegular() || st.Size() != s.limit {
+			t.Fatalf("%s: got mode %v and size %d, want regular file of %d bytes", suffix, st.Mode(), st.Size(), s.limit)
+		}
+		checkLogProtection(t, name)
+		data, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkRecords(name, data, recordsPerFile)
+		retained = append(retained, data...)
+	}
+	checkRecords("all retained files", retained, retainedFiles*recordsPerFile)
+	if !bytes.Equal(retained, stderr.Bytes()[stderr.Len()-len(retained):]) {
+		t.Fatal("retained files do not contain the exact final records in write order")
+	}
+	checkLogProtection(t, path+".lock")
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != retainedFiles+1 {
+		t.Fatalf("got %d directory entries, want active log, three archives, and lock", len(entries))
 	}
 }
 

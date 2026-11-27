@@ -54,6 +54,11 @@ func TestLogFileOwnerOnlyACL(t *testing.T) {
 	}
 }
 
+func checkLogProtection(t *testing.T, path string) {
+	t.Helper()
+	checkLogACL(t, path)
+}
+
 func checkLogACL(t *testing.T, path string) {
 	t.Helper()
 	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)

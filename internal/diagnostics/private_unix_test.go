@@ -9,6 +9,17 @@ import (
 	"testing"
 )
 
+func checkLogProtection(t *testing.T, path string) {
+	t.Helper()
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0600 {
+		t.Fatalf("%s: permissions = %v, want 0600", path, st.Mode())
+	}
+}
+
 func TestLogFileRepairsExistingPermissions(t *testing.T) {
 	path := filepath.Join(privateTestDir(t), "events.log")
 	for _, suffix := range []string{"", ".1", ".2", ".3", ".lock"} {
