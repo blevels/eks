@@ -110,8 +110,13 @@ func Run(ctx context.Context, args []string, version string, in *os.File, out, s
 	}()
 	firecalls := firecall.New(c.Timeout, c.OAuthURL, c.FirecallListURL, c.FirecallCreateURL)
 	firecalls.Log = log
+	namespaces, err := namespace.NewCache(namespace.Store{DB: db, Timeout: c.Timeout}, namespace.DefaultCacheEntries)
+	if err != nil {
+		log.Error("could not initialize namespace cache")
+		return 1
+	}
 	application := app.App{
-		Config: c, Store: namespace.Store{DB: db, Timeout: c.Timeout},
+		Config: c, Store: namespaces,
 		Connector: kconnect.Runner{Binary: c.Kconnect, Timeout: c.CommandTimeout},
 		Firecalls: firecalls,
 		UI:        &terminal.Terminal{In: in, Out: stderr}, Output: app.Printer{Writer: out, JSON: c.JSON}, Log: log,

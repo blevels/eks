@@ -13,4 +13,4 @@ The user requests caching all data retrieved from the database to prevent unnece
 
 **Why:** The user explicitly specified database caching and excluded token caching from this revision.
 
-**How to apply:** Keep caching scoped to database results for this work; do not extend it to OAuth tokens or firecall authorization. The user has not specified a TTL.
+**How to apply:** Keep caching scoped to database results for this work; do not extend it to OAuth tokens or firecall authorization. The accepted cache task uses session snapshots with explicit invalidation or process restart, not an automatic TTL. Changes to that freshness policy require separate review.
