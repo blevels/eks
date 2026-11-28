@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -80,16 +81,34 @@ func TestTokenFailures(t *testing.T) {
 		{"missing", `{}`, 200}, {"null", `{"access_token":null}`, 200},
 		{"empty", `{"access_token":""}`, 200}, {"wrong type", `{"access_token":17}`, 200},
 		{"malformed", `{`, 200}, {"server", "do-not-log-this", 500},
+		{"unauthorized with token", `{"access_token":"do-not-log-this"}`, http.StatusUnauthorized},
+		{"server error with token", `{"access_token":"do-not-log-this"}`, http.StatusInternalServerError},
+		{"unavailable with token", `{"access_token":"do-not-log-this"}`, http.StatusServiceUnavailable},
 		{"oversize", strings.Repeat("x", 1024*1024+1), 200},
 		{"header injection", `{"access_token":"x\r\ny"}`, 200},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(tt.status); fmt.Fprint(w, tt.body) }))
+			var calls atomic.Int32
+			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				if r.Method != http.MethodPost {
+					t.Errorf("method = %s, want POST", r.Method)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tt.status)
+				fmt.Fprint(w, tt.body)
+			}))
 			defer s.Close()
 			c := New(time.Second, s.URL, "", "")
-			_, err := c.Token(context.Background(), "u", "secret")
+			token, err := c.Token(context.Background(), "u", "secret")
 			if err == nil || strings.Contains(err.Error(), "do-not-log-this") {
 				t.Fatal(err)
+			}
+			if token != "" {
+				t.Fatal("failed OAuth response returned a nonempty token")
+			}
+			if got := calls.Load(); got != 1 {
+				t.Fatalf("requests = %d, want 1 (POST must not be retried)", got)
 			}
 		})
 	}
