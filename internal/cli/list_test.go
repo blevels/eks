@@ -10,10 +10,164 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"eks/internal/config"
 )
+
+// blockingListConnector keeps the real database/sql path, but does not return
+// from the query until its context is canceled.
+type blockingListConnector struct {
+	started      chan struct{}
+	queryContext context.Context
+	connections  atomic.Int32
+	queries      atomic.Int32
+	closes       atomic.Int32
+}
+
+func (c *blockingListConnector) Connect(context.Context) (driver.Conn, error) {
+	c.connections.Add(1)
+	return &blockingListConn{owner: c}, nil
+}
+
+func (*blockingListConnector) Driver() driver.Driver { return nil }
+
+type blockingListConn struct {
+	testConn
+	owner *blockingListConnector
+}
+
+func (c *blockingListConn) QueryContext(ctx context.Context, _ string, _ []driver.NamedValue) (driver.Rows, error) {
+	c.owner.queries.Add(1)
+	c.owner.queryContext = ctx
+	close(c.owner.started)
+	<-ctx.Done()
+	return nil, errors.Join(ctx.Err(), errors.New("CANARY database detail /home/private"))
+}
+
+func (c *blockingListConn) Close() error {
+	c.owner.closes.Add(1)
+	return nil
+}
+
+func TestListDatabaseCancellationIntegration(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		timeout      time.Duration
+		cancelParent bool
+		wantCode     int
+		wantErr      error
+		category     string
+	}{
+		{"timeout", 100 * time.Millisecond, false, 1, context.DeadlineExceeded, "timeout"},
+		{"parent cancellation", 30 * time.Second, true, 130, context.Canceled, "canceled"},
+	} {
+		for _, jsonOutput := range []bool{false, true} {
+			format := "text"
+			if jsonOutput {
+				format = "json"
+			}
+			t.Run(tt.name+"/"+format, func(t *testing.T) {
+				args := cliArgs(t)
+				args = append(args[:len(args)-1], "--timeout="+tt.timeout.String())
+				if jsonOutput {
+					args = append(args, "--json")
+				}
+				args = append(args, "list")
+
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				// Bound a regression that drops either the configured timeout or the parent
+				// context. The elapsed-time and error assertions distinguish this safety net.
+				watchdog := time.AfterFunc(5*time.Second, cancel)
+				defer watchdog.Stop()
+				connector := &blockingListConnector{started: make(chan struct{})}
+				if tt.cancelParent {
+					go func() {
+						select {
+						case <-connector.started:
+							cancel()
+						case <-ctx.Done():
+						}
+					}()
+				}
+				deps := cliDeps(testConnector{})
+				var db *sql.DB
+				deps.open = func(c config.Config) (*sql.DB, error) {
+					if !c.List || c.Timeout != tt.timeout {
+						t.Fatalf("listing config: list=%v timeout=%v", c.List, c.Timeout)
+					}
+					db = sql.OpenDB(connector)
+					t.Cleanup(func() { _ = db.Close() })
+					return db, nil
+				}
+				deps.lookupPath = func(string) (string, error) {
+					t.Fatal("listing checked an unused executable")
+					return "", nil
+				}
+				var out, stderr bytes.Buffer
+				start := time.Now()
+				code := runWith(ctx, args, "test", os.Stdin, &out, &stderr, deps)
+				if elapsed := time.Since(start); elapsed >= 3*time.Second {
+					t.Fatalf("listing did not stop promptly: %v", elapsed)
+				}
+				if code != tt.wantCode {
+					t.Fatalf("exit code=%d; want %d\n%s", code, tt.wantCode, stderr.String())
+				}
+				if connector.queries.Load() != 1 || connector.queryContext == nil {
+					t.Fatal("listing did not reach the blocking database query exactly once")
+				}
+				if !errors.Is(connector.queryContext.Err(), tt.wantErr) {
+					t.Fatalf("query context error=%v; want %v", connector.queryContext.Err(), tt.wantErr)
+				}
+				if !tt.cancelParent && ctx.Err() != nil {
+					t.Fatal("query timeout canceled the parent context")
+				}
+				if db == nil || connector.connections.Load() != 1 || connector.closes.Load() != 1 || db.Stats().InUse != 0 {
+					t.Fatal("listing did not close its database connection")
+				}
+				if err := db.PingContext(context.Background()); err == nil || connector.connections.Load() != 1 {
+					t.Fatal("listing left its database handle open")
+				}
+				if out.Len() != 0 {
+					t.Fatalf("canceled listing wrote result output: %q", out.String())
+				}
+				for _, secret := range []string{"CANARY", "/home/private", "synthetic.invalid", "SELECT"} {
+					if strings.Contains(stderr.String(), secret) {
+						t.Fatalf("database detail leaked into diagnostics: %q", secret)
+					}
+				}
+				records := parseRecords(t, stderr.String())
+				last := records[len(records)-1]
+				if last["event"] != "run.outcome" || last["exit_code"] != float64(tt.wantCode) || last["status"] != tt.category {
+					t.Fatalf("unexpected final outcome: %v", last)
+				}
+				queryOutcomes, closeOutcomes := 0, 0
+				for _, record := range records {
+					switch record["event"] {
+					case "query.outcome":
+						queryOutcomes++
+						if record["status"] != tt.category || record["error_category"] != tt.category || record["error_code"] != "query_failed" {
+							t.Fatalf("unexpected query diagnostic: %v", record)
+						}
+					case "database_close.outcome":
+						closeOutcomes++
+						if record["status"] != "success" {
+							t.Fatalf("database cleanup failed: %v", record)
+						}
+					case "output_list.start", "output_list.outcome":
+						t.Fatal("canceled listing reached success output")
+					}
+				}
+				if queryOutcomes != 1 || closeOutcomes != 1 {
+					t.Fatalf("query outcomes=%d cleanup outcomes=%d; want one each", queryOutcomes, closeOutcomes)
+				}
+			})
+		}
+	}
+}
 
 // Exercise database/sql's scanning and cleanup through the real listing path.
 type listRowsConnector struct {
@@ -24,6 +178,7 @@ type listRowsConnector struct {
 func (c *listRowsConnector) Connect(context.Context) (driver.Conn, error) {
 	return &listRowsConn{owner: c}, nil
 }
+
 func (*listRowsConnector) Driver() driver.Driver { return nil }
 
 type listRowsConn struct {
@@ -34,6 +189,7 @@ type listRowsConn struct {
 func (c *listRowsConn) QueryContext(context.Context, string, []driver.NamedValue) (driver.Rows, error) {
 	return c.owner.rows, nil
 }
+
 func (c *listRowsConn) Close() error {
 	c.owner.closes++
 	return nil
@@ -57,6 +213,7 @@ func (r *listFailureRows) Next(out []driver.Value) error {
 	copy(out, r.data[r.next-1])
 	return nil
 }
+
 func (r *listFailureRows) Close() error {
 	r.closes++
 	return nil
