@@ -241,6 +241,60 @@ func TestSuppliedProductionDetails(t *testing.T) {
 	}
 }
 
+func TestActiveProductionSuppliedDetails(t *testing.T) {
+	for _, tt := range []struct {
+		name, password, ticket string
+		wantPassword           string
+		wantPrompts            []string
+	}{
+		{
+			name:         "neither supplied",
+			wantPassword: "production-only",
+			wantPrompts:  []string{"password"},
+		},
+		{
+			name: "password supplied", password: "configured-production-password",
+			wantPassword: "configured-production-password",
+		},
+		{
+			name: "ticket supplied", ticket: "CHG-configured",
+			wantPassword: "production-only",
+			wantPrompts:  []string{"password"},
+		},
+		{
+			name: "both supplied", password: "configured-production-password", ticket: "CHG-configured",
+			wantPassword: "configured-production-password",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			a, conn, fc, ui := fixture()
+			production(a)
+			a.Config.ProductionPassword = tt.password
+			a.Config.Ticket = tt.ticket
+			ui.yes = false
+
+			if err := a.Run(context.Background()); err != nil {
+				t.Fatalf("Run error = %v", err)
+			}
+			if !slices.Equal(ui.prompts, tt.wantPrompts) {
+				t.Fatalf("prompts = %v, want %v", ui.prompts, tt.wantPrompts)
+			}
+			if fc.tokenUser != "ssample-user" || fc.tokenPassword != tt.wantPassword {
+				t.Fatal("OAuth did not receive the production identity and selected password")
+			}
+			if fc.created != 0 {
+				t.Fatalf("creations = %d, want none for active access", fc.created)
+			}
+			if len(conn.requests) != 1 {
+				t.Fatalf("connections = %d, want one", len(conn.requests))
+			}
+			if r := conn.requests[0]; r.Username != "ssample-user" || r.Password != tt.wantPassword {
+				t.Fatal("connection did not receive the production identity and selected password")
+			}
+		})
+	}
+}
+
 func TestJSONSuppliedProductionDetails(t *testing.T) {
 	for _, tt := range []struct {
 		name            string
