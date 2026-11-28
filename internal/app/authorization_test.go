@@ -9,6 +9,35 @@ import (
 	"eks/internal/firecall"
 )
 
+type cancelActiveOutput struct {
+	Output
+	cancel context.CancelFunc
+}
+
+func (o cancelActiveOutput) Active([]firecall.Active) error {
+	o.cancel()
+	return nil
+}
+
+func TestCanceledActiveOutputCannotConnect(t *testing.T) {
+	a, conn, fc, _ := fixture()
+	production(a)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a.Output = cancelActiveOutput{Output: a.Output, cancel: cancel}
+
+	err := a.Run(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error = %v, want context.Canceled", err)
+	}
+	if fc.listCalls != 1 || fc.created != 0 {
+		t.Fatalf("list calls = %d, creations = %d; want one initial lookup and no creation", fc.listCalls, fc.created)
+	}
+	if len(conn.requests) != 0 {
+		t.Fatalf("connections = %d, want none after cancellation", len(conn.requests))
+	}
+}
+
 func TestCanceledActiveAuthorizationCannotConnect(t *testing.T) {
 	a, conn, fc, _ := fixture()
 	production(a)
