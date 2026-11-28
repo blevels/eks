@@ -63,20 +63,20 @@ func TestPrecedenceAndDefaults(t *testing.T) {
 	env := environment()
 	env["PGHOST"] = "env.example.invalid"
 	env["INTERVAL"] = "700"
-	c, err := parse(t, []string{"--env-file", path, "--db-host", "flag.example.invalid", "--interval", "10m", "list"}, env)
+	c, err := parse(t, []string{"--env-file", path, "--db-host", "flag.example.invalid", "--interval", "10m", "12"}, env)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if c.DBHost != "flag.example.invalid" || c.Interval != 10*time.Minute || c.DBName != "postgres" || c.Region != "us-east-1" {
 		t.Fatalf("bad precedence/defaults %+v", c)
 	}
-	c, err = parse(t, []string{"--env-file", path, "list"}, env)
+	c, err = parse(t, []string{"--env-file", path, "12"}, env)
 	if err != nil || c.DBHost != "env.example.invalid" || c.Interval != 700*time.Second {
 		t.Fatalf("bad env precedence: %+v %v", c, err)
 	}
 	delete(env, "PGHOST")
 	delete(env, "INTERVAL")
-	c, err = parse(t, []string{"--env-file", path, "list"}, env)
+	c, err = parse(t, []string{"--env-file", path, "12"}, env)
 	if err != nil || c.DBHost != "file.example.invalid" || c.Interval != 800*time.Second {
 		t.Fatalf("bad dotenv: %+v %v", c, err)
 	}

@@ -65,32 +65,44 @@ func ParseContext(ctx context.Context, args []string, lookup func(string) (strin
 	return o.configuration()
 }
 
-// configuration converts the resolved numeric strings and validates selection,
-// common settings, and connection settings. It returns the final Config or the
-// first safe validation error; production validation remains a caller decision.
+// configuration converts applicable numeric strings and validates selection,
+// common settings, and connection settings. For list, unused numeric settings
+// stay zero unless explicitly flagged; explicit values are still validated.
+// It returns the final Config or the first safe validation error; production
+// validation remains a caller decision.
 func (o *options) configuration() (c Config, err error) {
 	c = o.config
 	if err := c.selectNamespace(o.name, o.set["id"], o.set["name"], o.args); err != nil {
 		return c, err
 	}
-	if c.Interval, err = positiveDuration(o.interval, "interval"); err != nil {
-		return c, err
+	if !c.List || o.set["interval"] {
+		if c.Interval, err = positiveDuration(o.interval, "interval"); err != nil {
+			return c, err
+		}
 	}
 	if c.Timeout, err = positiveDuration(o.timeout, "timeout"); err != nil {
 		return c, err
 	}
-	if c.CommandTimeout, err = positiveDuration(o.commandTimeout, "command-timeout"); err != nil {
-		return c, err
+	if !c.List || o.set["command-timeout"] {
+		if c.CommandTimeout, err = positiveDuration(o.commandTimeout, "command-timeout"); err != nil {
+			return c, err
+		}
 	}
-	if c.FirecallPollInterval, err = positiveDuration(o.firecallPollInterval, "firecall-poll-interval"); err != nil {
-		return c, err
+	if !c.List || o.set["firecall-poll-interval"] {
+		if c.FirecallPollInterval, err = positiveDuration(o.firecallPollInterval, "firecall-poll-interval"); err != nil {
+			return c, err
+		}
 	}
-	if c.FirecallActivationTimeout, err = positiveDuration(o.firecallActivationTimeout, "firecall-activation-timeout"); err != nil {
-		return c, err
+	if !c.List || o.set["firecall-activation-timeout"] {
+		if c.FirecallActivationTimeout, err = positiveDuration(o.firecallActivationTimeout, "firecall-activation-timeout"); err != nil {
+			return c, err
+		}
 	}
-	c.Duration, err = strconv.Atoi(o.hours)
-	if err != nil || c.Duration < 1 {
-		return c, errors.New("duration must be a positive number of hours")
+	if !c.List || o.set["duration"] {
+		c.Duration, err = strconv.Atoi(o.hours)
+		if err != nil || c.Duration < 1 {
+			return c, errors.New("duration must be a positive number of hours")
+		}
 	}
 	if err := c.validateCommon(); err != nil {
 		return c, err

@@ -3,3 +3,4 @@
 - [HTTP and caching scope](http-and-caching-scope.md) — retries require exponential backoff; cache database results, with token caching deferred.
 - [GitHub CI artifacts](github-ci-artifacts.md) — download artifacts through the authenticated proxy using relative API paths when the CLI follows public API links.
 - [Implementation quality](implementation-quality.md) — prefer the shortest clear, idiomatic path; line count is not a goal, and added structure must justify itself.
+- [Listing validation](listing-validation.md) — ignore inherited unused numeric settings for listing, but validate explicit flags and retain database/logging requirements.

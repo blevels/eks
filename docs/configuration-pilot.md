@@ -10,7 +10,7 @@
 | Offline options | Parsed help/version flags bypass dotenv and deployment configuration. A spelling used as a string operand or after `--` is not an option. |
 | Dotenv | Default `.env` may be absent; an explicitly selected file must be readable. Preserve the existing bounded, literal dotenv grammar and do not modify process environment. |
 | Selection | One positional ID/name/`list`, or one explicit `--id`/`--name`. Preserve the positional length heuristic and reject control characters. |
-| Validation | Preserve database, logging, numeric, and connection-specific validation. Production endpoints are still validated after discovery establishes the environment. |
+| Validation | Preserve database and logging validation for all commands. Listing ignores inherited connection-only numeric settings but validates explicit flags; connection commands retain full validation. Production endpoints are still validated after discovery establishes the environment. |
 | Safety | No secrets in flags; no raw flag-parser diagnostics, argument values, or configuration dumps in errors/output. Preserve structured diagnostic events and CLI exits. |
 
 ### Approved corrections
@@ -24,12 +24,25 @@
 4. Explicit `--id` and `--name` are mutually exclusive by presence, even if one is
    empty. An explicitly empty selector is invalid.
 
-### Deferred decisions
+### Listing validation policy
 
-This pilot does not change which numeric settings are validated for `list`.
-Refresh, command-timeout, firecall-polling, activation, and firecall-hour values
-must still be valid even though listing does not use them. Changing that policy
-needs separate review.
+For positional `list`, ignore inherited `INTERVAL`, `COMMAND_TIMEOUT`,
+`FIRECALL_POLL_INTERVAL`, `FIRECALL_ACTIVATION_TIMEOUT`, and `DURATION_IN_HRS`
+from environment and dotenv, including empty, malformed, nonpositive, or
+overflowing values. Listing does not use these settings; their Config fields
+remain zero when not explicitly flagged (including when defaults would apply).
+
+Explicit `--interval`, `--command-timeout`, `--firecall-poll-interval`,
+`--firecall-activation-timeout`, and `--duration` still require valid positive
+values, catching caller mistakes. Valid explicit values override invalid
+inherited ones, with repeated flags retaining standard last-value-wins behavior.
+
+`TIMEOUT` / `--timeout` remains mandatory and positive because listing uses it
+for database operations. Database and logging requirements, dotenv loading and
+syntax, selector validation, and flag syntax are unchanged. Connection commands,
+including `--id=list` and `--name=list`, retain all existing validation.
+
+### Other decisions
 
 Help/version flag values follow standard boolean syntax. When both are true,
 the existing CLI output dispatcher gives help precedence.
@@ -96,6 +109,15 @@ environment, and supported flags, plus empty/false overrides, invalid overridden
 values, argument boundaries, repeated dotenv selection, validation applicability,
 duration bounds, and safe error identity. CLI integration verifies usage exits,
 offline dependency avoidance, and machine-parseable JSON results.
+
+The listing-policy follow-up also passed
+`GOSUMDB=sum.golang.org GOTOOLCHAIN=go1.25.14 make test lint build cross-compile`
+and `git diff --check`. Focused regressions cover invalid unused settings from
+environment, dotenv, and explicit flags; valid overrides and repeated flags;
+unchanged connection validation (including explicit selectors named `list`);
+and retained database, database-timeout, and logging validation. CLI tests verify
+successful JSON listing without executable lookup, safe usage failures before
+database access, and successful exit diagnostics.
 
 No production service was contacted. No macOS/Windows runtime behavior is newly
 claimed. Production changes are confined to configuration; the CLI change is
