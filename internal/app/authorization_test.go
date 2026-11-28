@@ -70,6 +70,55 @@ func TestCanceledDetailsOutputCannotAuthorize(t *testing.T) {
 	}
 }
 
+type failingDetailsOutput struct {
+	Output
+	err   error
+	calls int
+}
+
+func (o *failingDetailsOutput) Details(namespace.Namespace) error {
+	o.calls++
+	return o.err
+}
+
+func TestFailedDetailsOutputCannotAuthorize(t *testing.T) {
+	a, conn, fc, ui := fixture()
+	production(a)
+	fc.active = nil
+	displayErr := errors.New("namespace display failed")
+	output := &failingDetailsOutput{Output: a.Output, err: displayErr}
+	a.Output = output
+	ctx := context.Background()
+	tokenCalls := 0
+	fc.tokenFn = func(context.Context, string, string) (string, error) {
+		tokenCalls++
+		return "token", nil
+	}
+
+	err := a.Run(ctx)
+	if !errors.Is(err, displayErr) {
+		t.Fatalf("Run error = %v, want namespace display error", err)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("context error = %v, want live context", ctx.Err())
+	}
+	if output.calls != 1 {
+		t.Errorf("namespace display calls = %d, want one", output.calls)
+	}
+	if tokenCalls != 0 {
+		t.Errorf("OAuth token calls = %d, want none after namespace display failure", tokenCalls)
+	}
+	if fc.listCalls != 0 || fc.created != 0 {
+		t.Errorf("list calls = %d, creations = %d; want none after namespace display failure", fc.listCalls, fc.created)
+	}
+	if ui.calls != 0 {
+		t.Errorf("prompts = %v, want no password, confirmation, or ticket prompts after namespace display failure", ui.prompts)
+	}
+	if len(conn.requests) != 0 {
+		t.Errorf("connections = %d, want none after namespace display failure", len(conn.requests))
+	}
+}
+
 type cancelActiveOutput struct {
 	Output
 	cancel context.CancelFunc
