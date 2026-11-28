@@ -76,6 +76,56 @@ func TestResponseFailurePolicyAndCleanup(t *testing.T) {
 	}
 }
 
+func TestTokenResponseFailuresAndCleanup(t *testing.T) {
+	for _, tt := range []struct {
+		name              string
+		readErr, closeErr error
+		category          ErrorCategory
+	}{
+		{name: "read reset", readErr: syscall.ECONNRESET, category: CategoryNetwork},
+		{name: "read short", readErr: io.ErrUnexpectedEOF, category: CategoryNetwork},
+		{name: "read unknown", readErr: errors.New("private-read-error"), category: CategoryRead},
+		{name: "close after valid token", closeErr: errors.New("private-close-error"), category: CategoryClose},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := New(time.Second, "https://example.invalid/oauth", "", "")
+			delays := noDelay(c)
+			calls, closed := 0, 0
+			c.HTTP.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if r.Method != http.MethodPost {
+					t.Errorf("method = %s, want POST", r.Method)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{},
+					Body: &responseBody{
+						reader:   strings.NewReader(`{"access_token":"private-usable-token"}`),
+						readErr:  tt.readErr,
+						closeErr: tt.closeErr,
+						closed:   &closed,
+					},
+				}, nil
+			})
+
+			token, err := c.Token(context.Background(), "private-user", "private-password")
+			if err == nil {
+				t.Fatal("failed OAuth response accepted")
+			}
+			if token != "" {
+				t.Error("failed OAuth response returned a nonempty token")
+			}
+			var failure *RequestError
+			if !errors.As(err, &failure) || failure.Category != tt.category {
+				t.Errorf("error = %v, want category %s", err, tt.category)
+			}
+			if calls != 1 || closed != 1 || len(*delays) != 0 {
+				t.Errorf("calls = %d, closes = %d, retry delays = %v; want 1, 1, none", calls, closed, *delays)
+			}
+		})
+	}
+}
+
 func TestPOSTTransportFailuresAndDiagnostics(t *testing.T) {
 	var logs bytes.Buffer
 	c := New(time.Second, "https://example.invalid/private-oauth", "", "https://example.invalid/private-create")
