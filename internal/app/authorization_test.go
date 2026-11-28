@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -284,6 +285,83 @@ func TestActivationBeforeConnection(t *testing.T) {
 			}
 			if mode == "create error" && fc.listCalls != 1 {
 				t.Fatal("polled after unsuccessful creation")
+			}
+		})
+	}
+}
+
+func TestActivationWaitFailureCannotConnect(t *testing.T) {
+	for _, tt := range []struct {
+		name, password string
+	}{
+		{name: "prompted password"},
+		{name: "supplied password", password: "configured-production-password"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			a, conn, fc, ui := fixture()
+			production(a)
+			a.Config.ProductionPassword = tt.password
+			fc.active, fc.noActivation = nil, true
+			waitErr := errors.New("activation wait failed")
+			waits := 0
+			fc.listFn = func(context.Context, string, string, string) ([]firecall.Active, error) {
+				switch fc.listCalls {
+				case 1:
+					if fc.created != 0 {
+						t.Fatal("initial access lookup occurred after creation")
+					}
+				case 2:
+					if fc.created != 1 {
+						t.Fatal("activation lookup requires exactly one creation")
+					}
+				default:
+					t.Fatal("activation lookup continued after the wait failed")
+				}
+				return nil, nil
+			}
+			a.Wait = func(ctx context.Context, delay time.Duration) error {
+				waits++
+				if waits != 1 {
+					t.Fatal("activation continued after the wait failed")
+				}
+				if err := ctx.Err(); err != nil {
+					t.Fatalf("wait context error = %v, want no cancellation or timeout", err)
+				}
+				if delay != a.Config.FirecallPollInterval {
+					t.Fatalf("polling delay = %s, want %s", delay, a.Config.FirecallPollInterval)
+				}
+				if fc.created != 1 || fc.listCalls != 2 || len(conn.requests) != 0 {
+					t.Fatalf("before wait: creations = %d, lookups = %d, connections = %d; want 1, 2, 0",
+						fc.created, fc.listCalls, len(conn.requests))
+				}
+				return waitErr
+			}
+
+			if err := a.Run(context.Background()); !errors.Is(err, waitErr) {
+				t.Fatalf("Run error = %v, want wait error %v", err, waitErr)
+			}
+			if waits != 1 {
+				t.Errorf("activation waits = %d, want one", waits)
+			}
+			if fc.created != 1 || fc.listCalls != 2 {
+				t.Errorf("creations = %d, lookups = %d; want one creation and only initial and inactive activation lookups",
+					fc.created, fc.listCalls)
+			}
+			if len(conn.requests) != 0 {
+				t.Errorf("connections = %d, want none after wait failure", len(conn.requests))
+			}
+			wantPassword := tt.password
+			wantPrompts := []string{"confirm", "ticket"}
+			if wantPassword == "" {
+				wantPassword = ui.password
+				wantPrompts = append([]string{"password"}, wantPrompts...)
+			}
+			if fc.tokenPassword != wantPassword {
+				t.Error("OAuth did not receive the selected production password")
+			}
+			if !slices.Equal(ui.prompts, wantPrompts) || ui.calls != len(wantPrompts) {
+				t.Errorf("prompts = %v, calls = %d; want %v and %d calls",
+					ui.prompts, ui.calls, wantPrompts, len(wantPrompts))
 			}
 		})
 	}
