@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"eks/internal/config"
+	"eks/internal/diagnostics"
 	"eks/internal/firecall"
 	"eks/internal/kconnect"
 	"eks/internal/namespace"
@@ -354,6 +355,68 @@ func TestActiveProductionRefreshPasswords(t *testing.T) {
 			}
 			if waits != 2 || len(conn.requests) != 2 {
 				t.Fatalf("waits = %d, connections = %d; want two each", waits, len(conn.requests))
+			}
+		})
+	}
+}
+
+func TestActiveProductionRefreshPasswordFailure(t *testing.T) {
+	promptErr := errors.New("password prompt failed")
+	for _, tt := range []struct {
+		name     string
+		password string
+		err      error
+	}{
+		{name: "prompt error", password: "must-not-be-used", err: promptErr},
+		{name: "empty password"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			a, conn, fc, ui := fixture()
+			production(a)
+			a.Config.Once = false
+			tokenCalls := 0
+			fc.tokenFn = func(context.Context, string, string) (string, error) {
+				tokenCalls++
+				return "token", nil
+			}
+			waits := 0
+			a.Wait = func(context.Context, time.Duration) error {
+				waits++
+				if waits != 1 {
+					t.Fatal("failed password entry must stop before another refresh wait")
+				}
+				if tokenCalls != 1 || fc.listCalls != 1 || len(conn.requests) != 1 {
+					t.Fatalf("first cycle: OAuth calls = %d, access lookups = %d, connections = %d; want one each",
+						tokenCalls, fc.listCalls, len(conn.requests))
+				}
+				if r := conn.requests[0]; r.Username != "ssample-user" || r.Password != ui.password {
+					t.Fatal("first connection did not use the prompted production credentials")
+				}
+				// Change only the next prompt result, after active access connected.
+				ui.password, ui.err = tt.password, tt.err
+				return nil
+			}
+
+			err := a.Run(context.Background())
+			if tt.err != nil {
+				if !errors.Is(err, tt.err) {
+					t.Fatalf("Run error = %v, want original prompt error", err)
+				}
+			} else {
+				var failure *diagnostics.Failure
+				if !errors.As(err, &failure) || failure.Code != "password_validation_failed" {
+					t.Fatalf("Run error = %v, want empty-password validation failure", err)
+				}
+			}
+			if waits != 1 || tokenCalls != 1 || fc.listCalls != 1 || len(conn.requests) != 1 {
+				t.Fatalf("waits = %d, OAuth calls = %d, access lookups = %d, connections = %d; want one each",
+					waits, tokenCalls, fc.listCalls, len(conn.requests))
+			}
+			if want := []string{"password", "password"}; !slices.Equal(ui.prompts, want) || ui.calls != len(want) {
+				t.Errorf("prompts = %v, calls = %d; want only two password prompts", ui.prompts, ui.calls)
+			}
+			if fc.created != 0 || fc.email != "" || fc.ticket != "" {
+				t.Error("failed password entry must not create a firecall")
 			}
 		})
 	}
