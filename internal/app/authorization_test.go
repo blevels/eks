@@ -7,7 +7,43 @@ import (
 	"time"
 
 	"eks/internal/firecall"
+	"eks/internal/namespace"
 )
+
+type cancelDetailsOutput struct {
+	Output
+	cancel context.CancelFunc
+}
+
+func (o cancelDetailsOutput) Details(namespace.Namespace) error {
+	o.cancel()
+	return nil
+}
+
+func TestCanceledDetailsOutputCannotAuthorize(t *testing.T) {
+	a, conn, fc, ui := fixture()
+	production(a)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a.Output = cancelDetailsOutput{Output: a.Output, cancel: cancel}
+
+	err := a.Run(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error = %v, want context.Canceled", err)
+	}
+	if fc.tokenUser != "" || fc.tokenPassword != "" {
+		t.Fatal("requested an OAuth token after cancellation")
+	}
+	if fc.listCalls != 0 || fc.created != 0 {
+		t.Fatalf("list calls = %d, creations = %d; want none after cancellation", fc.listCalls, fc.created)
+	}
+	if ui.calls != 0 {
+		t.Fatalf("prompts = %v, want none after cancellation", ui.prompts)
+	}
+	if len(conn.requests) != 0 {
+		t.Fatalf("connections = %d, want none after cancellation", len(conn.requests))
+	}
+}
 
 type cancelActiveOutput struct {
 	Output
