@@ -529,6 +529,75 @@ func TestActivationWaitFailureCannotConnect(t *testing.T) {
 	}
 }
 
+type failingTicketUI struct {
+	*fakeUI
+	err error
+}
+
+func (u failingTicketUI) Ticket(ctx context.Context) (string, error) {
+	ticket, _ := u.fakeUI.Ticket(ctx)
+	return ticket, u.err
+}
+
+func TestFailedTicketPromptCannotRequestProductionAccess(t *testing.T) {
+	for _, tt := range []struct {
+		name, password string
+	}{
+		{name: "prompted password"},
+		{name: "supplied password", password: "configured-production-password"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			a, conn, fc, ui := fixture()
+			production(a)
+			a.Config.ProductionPassword = tt.password
+			a.Config.Ticket = ""
+			fc.active, fc.noActivation = nil, true
+			ui.yes = true
+			ticketErr := errors.New("ticket prompt failed")
+			a.UI = failingTicketUI{fakeUI: ui, err: ticketErr}
+			waits := 0
+			a.Wait = func(context.Context, time.Duration) error {
+				waits++
+				return ticketErr
+			}
+			ctx := context.Background()
+
+			err := a.Run(ctx)
+			if !errors.Is(err, ticketErr) {
+				t.Fatalf("Run error = %v, want ticket prompt error %v", err, ticketErr)
+			}
+			if ctx.Err() != nil {
+				t.Errorf("context error = %v, want live context", ctx.Err())
+			}
+			if fc.created != 0 {
+				t.Errorf("creations = %d, want none after ticket prompt failure", fc.created)
+			}
+			if fc.listCalls != 1 {
+				t.Errorf("list calls = %d, want only the initial lookup and no activation lookup", fc.listCalls)
+			}
+			if waits != 0 {
+				t.Errorf("activation waits = %d, want none after ticket prompt failure", waits)
+			}
+			if len(conn.requests) != 0 {
+				t.Errorf("connections = %d, want none after ticket prompt failure", len(conn.requests))
+			}
+			wantPassword := tt.password
+			wantPrompts := []string{"confirm", "ticket"}
+			if wantPassword == "" {
+				wantPassword = ui.password
+				wantPrompts = append([]string{"password"}, wantPrompts...)
+			}
+			if fc.tokenPassword != wantPassword {
+				t.Error("OAuth did not receive the selected production password")
+			}
+			if !slices.Equal(ui.prompts, wantPrompts) || ui.calls != len(wantPrompts) {
+				t.Errorf("prompts = %v, calls = %d; want %v and %d calls",
+					ui.prompts, ui.calls, wantPrompts, len(wantPrompts))
+			}
+		})
+	}
+}
+
 func TestEnvironmentGating(t *testing.T) {
 	for _, env := range []string{"dev", "sit", "uat", "prod", "production", "PROD", " prod", "prod ", "qa", ""} {
 		t.Run(env, func(t *testing.T) {
