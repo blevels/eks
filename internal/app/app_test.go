@@ -241,6 +241,58 @@ func TestSuppliedProductionDetails(t *testing.T) {
 	}
 }
 
+func TestJSONSuppliedProductionDetails(t *testing.T) {
+	for _, tt := range []struct {
+		name            string
+		active          bool
+		wantConnections int
+	}{
+		{name: "no active access"},
+		{name: "active access", active: true, wantConnections: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			a, conn, fc, ui := fixture()
+			production(a)
+			a.Config.JSON = true
+			a.Config.ProductionPassword = "configured-production-password"
+			a.Config.Ticket = "CHG-configured"
+			a.Output = Printer{Writer: io.Discard, JSON: true}
+			if !tt.active {
+				fc.active = nil
+			}
+
+			err := a.Run(context.Background())
+			if tt.active {
+				if err != nil {
+					t.Fatalf("Run with active access: %v", err)
+				}
+			} else if err == nil || err.Error() != "authorization_failed" {
+				t.Fatalf("Run error = %v, want JSON-mode creation refusal", err)
+			}
+			if ui.calls != 0 || len(ui.prompts) != 0 {
+				t.Errorf("JSON mode prompted: calls = %d, prompts = %v", ui.calls, ui.prompts)
+			}
+			if fc.tokenUser != "ssample-user" || fc.tokenPassword != a.Config.ProductionPassword {
+				t.Error("OAuth did not receive the production identity and supplied password")
+			}
+			if fc.listCalls != 1 {
+				t.Errorf("access lookups = %d, want 1", fc.listCalls)
+			}
+			if fc.created != 0 {
+				t.Errorf("firecall creations = %d, want 0", fc.created)
+			}
+			if len(conn.requests) != tt.wantConnections {
+				t.Fatalf("connections = %d, want %d", len(conn.requests), tt.wantConnections)
+			}
+			if tt.active {
+				if r := conn.requests[0]; r.Username != "ssample-user" || r.Password != a.Config.ProductionPassword {
+					t.Error("connection did not receive the production identity and supplied password")
+				}
+			}
+		})
+	}
+}
+
 func TestWorkflowErrors(t *testing.T) {
 	for _, name := range []string{"missing", "query", "ambiguous json", "invalid choice", "prompt EOF", "decrypt", "connect", "oauth", "production config", "json password", "json create", "empty password"} {
 		t.Run(name, func(t *testing.T) {
