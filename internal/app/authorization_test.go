@@ -79,6 +79,48 @@ func (o cancelActiveOutput) Active([]firecall.Active) error {
 	return nil
 }
 
+type failingActiveOutput struct {
+	Output
+	err   error
+	calls int
+}
+
+func (o *failingActiveOutput) Active([]firecall.Active) error {
+	o.calls++
+	return o.err
+}
+
+func TestFailedActiveOutputCannotConnect(t *testing.T) {
+	a, conn, fc, ui := fixture()
+	production(a)
+	displayErr := errors.New("active access display failed")
+	output := &failingActiveOutput{Output: a.Output, err: displayErr}
+	a.Output = output
+	ctx := context.Background()
+
+	err := a.Run(ctx)
+	if !errors.Is(err, displayErr) {
+		t.Fatalf("Run error = %v, want active access display error", err)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("context error = %v, want live context", ctx.Err())
+	}
+	if output.calls != 1 {
+		t.Errorf("active display calls = %d, want one", output.calls)
+	}
+	if fc.listCalls != 1 || fc.created != 0 {
+		t.Errorf("list calls = %d, creations = %d; want one initial lookup and no creation", fc.listCalls, fc.created)
+	}
+	for _, prompt := range ui.prompts {
+		if prompt == "confirm" || prompt == "ticket" {
+			t.Errorf("unexpected %s prompt after active access display failure", prompt)
+		}
+	}
+	if len(conn.requests) != 0 {
+		t.Errorf("connections = %d, want none after active access display failure", len(conn.requests))
+	}
+}
+
 type cancelCreatedOutput struct {
 	Output
 	cancel context.CancelFunc
