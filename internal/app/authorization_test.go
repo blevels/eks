@@ -79,6 +79,40 @@ func (o cancelActiveOutput) Active([]firecall.Active) error {
 	return nil
 }
 
+type cancelCreatedOutput struct {
+	Output
+	cancel context.CancelFunc
+}
+
+func (o cancelCreatedOutput) Created([]firecall.Created) error {
+	o.cancel()
+	return nil
+}
+
+func TestCanceledCreatedOutputStopsActivation(t *testing.T) {
+	a, conn, fc, ui := fixture()
+	production(a)
+	fc.active = nil
+	ui.yes = true
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a.Output = cancelCreatedOutput{Output: a.Output, cancel: cancel}
+
+	err := a.Run(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error = %v, want context.Canceled", err)
+	}
+	if fc.created != 1 {
+		t.Fatalf("creations = %d, want exactly one", fc.created)
+	}
+	if fc.listCalls != 1 {
+		t.Fatalf("list calls = %d, want only the initial lookup and no activation lookup", fc.listCalls)
+	}
+	if len(conn.requests) != 0 {
+		t.Fatalf("connections = %d, want none after cancellation", len(conn.requests))
+	}
+}
+
 func TestCanceledActiveOutputCannotConnect(t *testing.T) {
 	a, conn, fc, _ := fixture()
 	production(a)
