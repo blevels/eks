@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -36,13 +37,13 @@ func (f *fakeConnect) Connect(_ context.Context, r kconnect.Request) error {
 }
 
 type fakeFirecall struct {
-	active                          []firecall.Active
-	tokenUser, tokenPassword, email string
-	created                         int
-	err                             error
-	listCalls                       int
-	listFn                          func(context.Context, string, string, string) ([]firecall.Active, error)
-	noActivation                    bool
+	active                                  []firecall.Active
+	tokenUser, tokenPassword, email, ticket string
+	created                                 int
+	err                                     error
+	listCalls                               int
+	listFn                                  func(context.Context, string, string, string) ([]firecall.Active, error)
+	noActivation                            bool
 }
 
 func (f *fakeFirecall) Token(_ context.Context, u, p string) (string, error) {
@@ -56,9 +57,10 @@ func (f *fakeFirecall) List(ctx context.Context, token, account, role string) ([
 	}
 	return f.active, f.err
 }
-func (f *fakeFirecall) Create(_ context.Context, _, _, email, _ string, _ int) ([]firecall.Created, error) {
+func (f *fakeFirecall) Create(_ context.Context, _, _, email, ticket string, _ int) ([]firecall.Created, error) {
 	f.created++
 	f.email = email
+	f.ticket = ticket
 	if !f.noActivation {
 		f.active = []firecall.Active{{Status: "active"}}
 	}
@@ -71,15 +73,29 @@ type fakeUI struct {
 	calls    int
 	password string
 	err      error
+	prompts  []string
 }
 
 func (f *fakeUI) Choose(context.Context, []namespace.Namespace) (int, error) {
 	f.calls++
+	f.prompts = append(f.prompts, "choose")
 	return f.index, f.err
 }
-func (f *fakeUI) Password(context.Context) (string, error) { f.calls++; return f.password, f.err }
-func (f *fakeUI) Confirm(context.Context) (bool, error)    { f.calls++; return f.yes, f.err }
-func (f *fakeUI) Ticket(context.Context) (string, error)   { f.calls++; return "CHG1", f.err }
+func (f *fakeUI) Password(context.Context) (string, error) {
+	f.calls++
+	f.prompts = append(f.prompts, "password")
+	return f.password, f.err
+}
+func (f *fakeUI) Confirm(context.Context) (bool, error) {
+	f.calls++
+	f.prompts = append(f.prompts, "confirm")
+	return f.yes, f.err
+}
+func (f *fakeUI) Ticket(context.Context) (string, error) {
+	f.calls++
+	f.prompts = append(f.prompts, "ticket")
+	return "CHG1", f.err
+}
 
 func fixture() (*App, *fakeConnect, *fakeFirecall, *fakeUI) {
 	conn := &fakeConnect{}
@@ -138,6 +154,88 @@ func TestWorkflow(t *testing.T) {
 			}
 			if !tt.prod && fc.tokenUser != "" {
 				t.Fatal("nonprod contacted OAuth")
+			}
+		})
+	}
+}
+
+func TestSuppliedProductionDetails(t *testing.T) {
+	for _, tt := range []struct {
+		name, password, ticket   string
+		wantPassword, wantTicket string
+		wantPrompts              []string
+	}{
+		{
+			name:         "neither supplied",
+			wantPassword: "production-only", wantTicket: "CHG1",
+			wantPrompts: []string{"choose", "password", "confirm", "ticket"},
+		},
+		{
+			name: "password supplied", password: "configured-production-password",
+			wantPassword: "configured-production-password", wantTicket: "CHG1",
+			wantPrompts: []string{"choose", "confirm", "ticket"},
+		},
+		{
+			name: "ticket supplied", ticket: "CHG-configured",
+			wantPassword: "production-only", wantTicket: "CHG-configured",
+			wantPrompts: []string{"choose", "password", "confirm"},
+		},
+		{
+			name: "both supplied", password: "configured-production-password", ticket: "CHG-configured",
+			wantPassword: "configured-production-password", wantTicket: "CHG-configured",
+			wantPrompts: []string{"choose", "confirm"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, decision := range []struct {
+				name    string
+				confirm bool
+			}{
+				{"confirm creation", true},
+				{"decline creation", false},
+			} {
+				t.Run(decision.name, func(t *testing.T) {
+					a, conn, fc, ui := fixture()
+					production(a)
+					// Keep namespace selection interactive even when details are supplied.
+					store := a.Store.(fakeStore)
+					store.items = append(store.items, store.items[0])
+					a.Store = store
+					a.Config.ProductionPassword = tt.password
+					a.Config.Ticket = tt.ticket
+					fc.active = nil
+					ui.yes = decision.confirm
+
+					err := a.Run(context.Background())
+					if (err != nil) != !decision.confirm {
+						t.Fatalf("Run error = %v, confirmed = %v", err, decision.confirm)
+					}
+					wantPrompts := tt.wantPrompts
+					if !decision.confirm && wantPrompts[len(wantPrompts)-1] == "ticket" {
+						wantPrompts = wantPrompts[:len(wantPrompts)-1]
+					}
+					if !slices.Equal(ui.prompts, wantPrompts) {
+						t.Fatalf("prompts = %v, want %v", ui.prompts, wantPrompts)
+					}
+					if fc.tokenUser != "ssample-user" || fc.tokenPassword != tt.wantPassword {
+						t.Fatalf("OAuth did not receive the production identity and selected password")
+					}
+					if !decision.confirm {
+						if fc.created != 0 || len(conn.requests) != 0 || fc.ticket != "" || fc.email != "" {
+							t.Fatal("declining must prevent creation and connection")
+						}
+						return
+					}
+					if fc.created != 1 || len(conn.requests) != 1 {
+						t.Fatalf("creations = %d, connections = %d, want one each", fc.created, len(conn.requests))
+					}
+					if fc.ticket != tt.wantTicket || fc.email != "sample-user@test.com" {
+						t.Fatalf("creation ticket = %q, email = %q; want %q and base-identity email", fc.ticket, fc.email, tt.wantTicket)
+					}
+					if r := conn.requests[0]; r.Username != "ssample-user" || r.Password != tt.wantPassword {
+						t.Fatal("connection did not receive the production identity and selected password")
+					}
+				})
 			}
 		})
 	}
