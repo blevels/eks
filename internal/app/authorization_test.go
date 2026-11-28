@@ -171,6 +171,70 @@ func TestFailedActiveOutputCannotConnect(t *testing.T) {
 	}
 }
 
+type failingConfirmUI struct {
+	*fakeUI
+	err error
+}
+
+func (ui failingConfirmUI) Confirm(ctx context.Context) (bool, error) {
+	yes, _ := ui.fakeUI.Confirm(ctx)
+	return yes, ui.err
+}
+
+func TestFailedApprovalCannotRequestProductionAccess(t *testing.T) {
+	for _, tt := range []struct {
+		name, password string
+	}{
+		{name: "prompted password"},
+		{name: "supplied password", password: "configured-production-password"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			a, conn, fc, ui := fixture()
+			production(a)
+			a.Config.ProductionPassword = tt.password
+			fc.active = nil
+			approvalErr := errors.New("approval prompt failed")
+			a.UI = failingConfirmUI{fakeUI: ui, err: approvalErr}
+			waits := 0
+			a.Wait = func(context.Context, time.Duration) error {
+				waits++
+				return nil
+			}
+			ctx := context.Background()
+
+			if err := a.Run(ctx); !errors.Is(err, approvalErr) {
+				t.Fatalf("Run error = %v, want approval prompt error %v", err, approvalErr)
+			}
+			if err := ctx.Err(); err != nil {
+				t.Fatalf("context error = %v, want live context", err)
+			}
+			if fc.listCalls != 1 || fc.created != 0 {
+				t.Errorf("list calls = %d, creations = %d; want only initial lookup and no creation",
+					fc.listCalls, fc.created)
+			}
+			if waits != 0 {
+				t.Errorf("activation waits = %d, want none after approval failure", waits)
+			}
+			if len(conn.requests) != 0 {
+				t.Errorf("connections = %d, want none after approval failure", len(conn.requests))
+			}
+			wantPassword := tt.password
+			wantPrompts := []string{"confirm"}
+			if wantPassword == "" {
+				wantPassword = ui.password
+				wantPrompts = append([]string{"password"}, wantPrompts...)
+			}
+			if fc.tokenPassword != wantPassword {
+				t.Error("OAuth did not receive the selected production password")
+			}
+			if !slices.Equal(ui.prompts, wantPrompts) || ui.calls != len(wantPrompts) {
+				t.Errorf("prompts = %v, calls = %d; want %v and %d calls",
+					ui.prompts, ui.calls, wantPrompts, len(wantPrompts))
+			}
+		})
+	}
+}
+
 type cancelCreatedOutput struct {
 	Output
 	cancel context.CancelFunc
