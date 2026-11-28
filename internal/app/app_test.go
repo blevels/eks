@@ -359,6 +359,88 @@ func TestActiveProductionRefreshPasswords(t *testing.T) {
 	}
 }
 
+func TestActiveProductionRefreshStopsOnConnectionFailure(t *testing.T) {
+	for _, tt := range []struct {
+		name, password string
+	}{
+		{name: "prompted password"},
+		{name: "supplied password", password: "configured-production-password"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			a, conn, fc, ui := fixture()
+			production(a)
+			a.Config.Once = false
+			a.Config.ProductionPassword = tt.password
+			connectErr := errors.New("second connection failed")
+			tokenCalls := 0
+			fc.tokenFn = func(context.Context, string, string) (string, error) {
+				tokenCalls++
+				return "token", nil
+			}
+			var wantPrompts []string
+			if tt.password == "" {
+				wantPrompts = []string{"password"}
+			}
+			waits := 0
+			a.Wait = func(context.Context, time.Duration) error {
+				waits++
+				if waits > 1 {
+					// Bound the test if a failed refresh incorrectly continues.
+					return context.Canceled
+				}
+				if len(conn.requests) != 1 || conn.err != nil {
+					t.Fatalf("first cycle: connections = %d, error = %v; want one successful connection",
+						len(conn.requests), conn.err)
+				}
+				if tokenCalls != 1 || fc.listCalls != 1 || fc.created != 0 {
+					t.Fatalf("first cycle: tokens = %d, access checks = %d, creations = %d; want 1, 1, 0",
+						tokenCalls, fc.listCalls, fc.created)
+				}
+				if !slices.Equal(ui.prompts, wantPrompts) || ui.calls != len(wantPrompts) {
+					t.Fatalf("first cycle: prompts = %v, calls = %d; want %v and %d calls",
+						ui.prompts, ui.calls, wantPrompts, len(wantPrompts))
+				}
+				conn.err = connectErr
+				ui.password = "second-cycle-production-password"
+				return nil
+			}
+
+			if err := a.Run(context.Background()); !errors.Is(err, connectErr) {
+				t.Fatalf("Run error = %v, want connector error %v", err, connectErr)
+			}
+			if waits != 1 {
+				t.Errorf("refresh waits = %d, want one", waits)
+			}
+			if len(conn.requests) != 2 {
+				t.Fatalf("connections = %d, want two", len(conn.requests))
+			}
+			for i, r := range conn.requests {
+				wantPassword := tt.password
+				if wantPassword == "" {
+					wantPassword = "production-only"
+					if i == 1 {
+						wantPassword = "second-cycle-production-password"
+					}
+				}
+				if r.Username != "ssample-user" || r.Password != wantPassword {
+					t.Errorf("cycle %d: connection did not receive the production identity and selected password", i+1)
+				}
+			}
+			if tt.password == "" {
+				wantPrompts = append(wantPrompts, "password")
+			}
+			if !slices.Equal(ui.prompts, wantPrompts) || ui.calls != len(wantPrompts) {
+				t.Errorf("prompts = %v, calls = %d; want %v and %d calls",
+					ui.prompts, ui.calls, wantPrompts, len(wantPrompts))
+			}
+			if tokenCalls != 2 || fc.listCalls != 2 || fc.created != 0 {
+				t.Errorf("tokens = %d, access checks = %d, creations = %d; want 2, 2, 0",
+					tokenCalls, fc.listCalls, fc.created)
+			}
+		})
+	}
+}
+
 func TestProductionSelectionConnectsToChosenTarget(t *testing.T) {
 	a, conn, fc, ui := fixture()
 	a.Store = fakeStore{items: []namespace.Namespace{
