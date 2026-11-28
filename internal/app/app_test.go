@@ -478,6 +478,65 @@ func TestProductionSelectionConnectsToChosenTarget(t *testing.T) {
 	}
 }
 
+func TestProductionRefreshKeepsChosenTarget(t *testing.T) {
+	a, conn, fc, ui := fixture()
+	a.Store = fakeStore{items: []namespace.Namespace{
+		{Name: "payments", Environment: "prod", ID: "12", Account: "123456789012", Role: "PaymentsRole"},
+		{Name: "orders", Environment: "prod", ID: "34", Account: "210987654321", Role: "OrdersRole"},
+	}}
+	ui.index = 1
+	a.Config.Once = false
+	a.Config.ProductionPassword = "configured-production-password"
+	a.Config.Ticket = "CHG-configured"
+	a.Config.Interval = time.Minute
+	const cycles = 3
+	const wantARN = "arn:aws:iam::210987654321:role/OrdersRole"
+	fc.listFn = func(_ context.Context, token, account, role string) ([]firecall.Active, error) {
+		if token != "token" || account != "210987654321" || role != wantARN {
+			t.Fatalf("access lookup %d = %q, %q, %q; want selected production account and ARN", fc.listCalls, token, account, role)
+		}
+		if fc.listCalls != len(conn.requests)+1 {
+			t.Fatalf("access lookups = %d, connections = %d; want one lookup before each connection", fc.listCalls, len(conn.requests))
+		}
+		return fc.active, nil
+	}
+	waits := 0
+	a.Wait = func(_ context.Context, delay time.Duration) error {
+		waits++
+		if delay != a.Config.Interval {
+			t.Fatalf("wait delay = %v, want %v", delay, a.Config.Interval)
+		}
+		if len(conn.requests) != waits || fc.listCalls != waits {
+			t.Fatalf("wait %d: connections = %d, access lookups = %d; want one of each per cycle", waits, len(conn.requests), fc.listCalls)
+		}
+		if waits == cycles {
+			return context.Canceled
+		}
+		return nil
+	}
+
+	if err := a.Run(context.Background()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error = %v, want context.Canceled", err)
+	}
+	if waits != cycles || len(conn.requests) != cycles || fc.listCalls != cycles {
+		t.Fatalf("waits = %d, connections = %d, access lookups = %d; want %d each", waits, len(conn.requests), fc.listCalls, cycles)
+	}
+	if want := []string{"choose"}; ui.calls != 1 || !slices.Equal(ui.prompts, want) {
+		t.Errorf("UI calls = %d, prompts = %v; want exactly one selection prompt", ui.calls, ui.prompts)
+	}
+	if fc.created != 0 {
+		t.Errorf("creations = %d, want none for active access", fc.created)
+	}
+	for i, r := range conn.requests {
+		if r.Namespace != "orders" || r.ARN != wantARN {
+			t.Errorf("connection %d target = %q, %q; want selected orders namespace and ARN", i+1, r.Namespace, r.ARN)
+		}
+		if r.Username != "ssample-user" || r.Password != a.Config.ProductionPassword {
+			t.Errorf("connection %d did not receive the production identity and supplied password", i+1)
+		}
+	}
+}
+
 func TestJSONSuppliedProductionDetails(t *testing.T) {
 	for _, tt := range []struct {
 		name            string
