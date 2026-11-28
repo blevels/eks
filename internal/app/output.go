@@ -13,12 +13,18 @@ import (
 	"eks/internal/namespace"
 )
 
+// Printer writes program results, not diagnostics, to Writer (normally stdout).
+// JSON selects newline-delimited event/data records instead of human-readable
+// text. Text fields have control characters replaced; JSON preserves field values
+// using JSON escaping. The caller supplies and retains ownership of Writer.
 type Printer struct {
 	Writer io.Writer
 	JSON   bool
 }
 
-// clean prevents remote/database strings from injecting terminal control codes.
+// clean returns s with each Unicode control character replaced by a space,
+// preventing remote/database strings from injecting terminal control codes into
+// human-readable output. It leaves all other characters unchanged.
 func clean(s string) string {
 	return strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
@@ -27,12 +33,20 @@ func clean(s string) string {
 		return r
 	}, s)
 }
+
+// event writes one newline-terminated JSON record to Writer, with kind as its
+// event name and value as its data. It returns nil on success or the JSON
+// encoding/writer error; it does not close Writer.
 func (p Printer) event(kind string, value any) error {
 	return json.NewEncoder(p.Writer).Encode(struct {
 		Event string `json:"event"`
 		Data  any    `json:"data"`
 	}{kind, value})
 }
+
+// List writes items in order as a namespace table or a "namespaces" JSON record.
+// An empty text list still includes the header; JSON preserves nil versus empty
+// slices. It returns nil on success or an encoding, write, or table-flush error.
 func (p Printer) List(items []namespace.Namespace) error {
 	if p.JSON {
 		return p.event("namespaces", items)
@@ -48,6 +62,10 @@ func (p Printer) List(items []namespace.Namespace) error {
 	}
 	return w.Flush()
 }
+
+// Details writes n's namespace/account/role/environment as labeled text, or the
+// full namespace value as a "namespace" JSON record. It returns nil on success
+// or the encoding/writer error.
 func (p Printer) Details(n namespace.Namespace) error {
 	if p.JSON {
 		return p.event("namespace", n)
@@ -55,6 +73,10 @@ func (p Printer) Details(n namespace.Namespace) error {
 	_, err := fmt.Fprintf(p.Writer, "\nNAMESPACE DETAILS:\n-----------------------------------\nNAME:      %s\nACCOUNT:   %s\nROLE:      %s\nENV:       %s\n-----------------------------------\n", clean(n.Name), clean(n.Account), clean(n.Role), clean(n.Environment))
 	return err
 }
+
+// Active writes each item's requester, role, and end time as text, or all items
+// in one "active_firecalls" JSON record. Empty input writes no text. It returns
+// nil on success or the first encoding/writer error.
 func (p Printer) Active(items []firecall.Active) error {
 	if p.JSON {
 		return p.event("active_firecalls", items)
@@ -66,6 +88,10 @@ func (p Printer) Active(items []firecall.Active) error {
 	}
 	return nil
 }
+
+// Created writes each item's firecall ID, status, and message as text, or all
+// items in one "created_firecalls" JSON record. Empty input writes no text.
+// It returns nil on success or the first encoding/writer error.
 func (p Printer) Created(items []firecall.Created) error {
 	if p.JSON {
 		return p.event("created_firecalls", items)
@@ -77,6 +103,10 @@ func (p Printer) Created(items []firecall.Created) error {
 	}
 	return nil
 }
+
+// Connected writes a connection confirmation for n.Name at t, either as text or
+// a "connected" JSON record containing namespace and time. Time uses RFC3339
+// with t's existing offset. It returns nil on success or the encoding/writer error.
 func (p Printer) Connected(n namespace.Namespace, t time.Time) error {
 	if p.JSON {
 		return p.event("connected", struct {
