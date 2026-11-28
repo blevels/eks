@@ -11,6 +11,60 @@ import (
 	"eks/internal/namespace"
 )
 
+type failingChoiceInteraction struct {
+	Interaction
+	err        error
+	calls      int
+	contextErr error
+}
+
+func (i *failingChoiceInteraction) Choose(ctx context.Context, _ []namespace.Namespace) (int, error) {
+	i.calls++
+	i.contextErr = ctx.Err()
+	return 0, i.err
+}
+
+func TestFailedNamespaceSelectionCannotAuthorize(t *testing.T) {
+	a, conn, fc, ui := fixture()
+	a.Store = fakeStore{items: []namespace.Namespace{
+		{Name: "payments", Environment: "prod", ID: "12", Account: "123456789012", Role: "PaymentsRole"},
+		{Name: "orders", Environment: "prod", ID: "34", Account: "210987654321", Role: "OrdersRole"},
+	}}
+	fc.active = nil
+	choiceErr := errors.New("namespace selection failed")
+	interaction := &failingChoiceInteraction{Interaction: ui, err: choiceErr}
+	a.UI = interaction
+	ctx := context.Background()
+	tokenCalls := 0
+	fc.tokenFn = func(context.Context, string, string) (string, error) {
+		tokenCalls++
+		return "token", nil
+	}
+
+	err := a.Run(ctx)
+	if !errors.Is(err, choiceErr) {
+		t.Fatalf("Run error = %v, want namespace selection error", err)
+	}
+	if ctx.Err() != nil || interaction.contextErr != nil {
+		t.Fatalf("context errors: Run = %v, Choose = %v; want live contexts", ctx.Err(), interaction.contextErr)
+	}
+	if interaction.calls != 1 {
+		t.Errorf("namespace selection calls = %d, want one", interaction.calls)
+	}
+	if ui.calls != 0 || len(ui.prompts) != 0 {
+		t.Errorf("prompts = %v, calls = %d; want no password, confirmation, or ticket prompts", ui.prompts, ui.calls)
+	}
+	if tokenCalls != 0 {
+		t.Errorf("OAuth token calls = %d, want none after namespace selection failure", tokenCalls)
+	}
+	if fc.listCalls != 0 || fc.created != 0 {
+		t.Errorf("list calls = %d, creations = %d; want none after namespace selection failure", fc.listCalls, fc.created)
+	}
+	if len(conn.requests) != 0 {
+		t.Errorf("connections = %d, want none after namespace selection failure", len(conn.requests))
+	}
+}
+
 func TestCanceledTokenAuthorizationCannotConnect(t *testing.T) {
 	a, conn, fc, _ := fixture()
 	production(a)
