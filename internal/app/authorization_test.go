@@ -124,6 +124,65 @@ func TestCanceledDetailsOutputCannotAuthorize(t *testing.T) {
 	}
 }
 
+type failingListOutput struct {
+	Output
+	err          error
+	listCalls    int
+	detailsCalls int
+}
+
+func (o *failingListOutput) List([]namespace.Namespace) error {
+	o.listCalls++
+	return o.err
+}
+
+func (o *failingListOutput) Details(namespace.Namespace) error {
+	o.detailsCalls++
+	return nil
+}
+
+func TestFailedListOutputCannotAuthorize(t *testing.T) {
+	a, conn, fc, ui := fixture()
+	production(a)
+	a.Config.List = true
+	fc.active = nil
+	displayErr := errors.New("namespace listing failed")
+	output := &failingListOutput{Output: a.Output, err: displayErr}
+	a.Output = output
+	ctx := context.Background()
+	tokenCalls := 0
+	fc.tokenFn = func(context.Context, string, string) (string, error) {
+		tokenCalls++
+		return "token", nil
+	}
+
+	err := a.Run(ctx)
+	if !errors.Is(err, displayErr) {
+		t.Fatalf("Run error = %v, want namespace listing error", err)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("context error = %v, want live context", ctx.Err())
+	}
+	if output.listCalls != 1 {
+		t.Errorf("namespace listing calls = %d, want one", output.listCalls)
+	}
+	if output.detailsCalls != 0 {
+		t.Errorf("namespace display calls = %d, want none after namespace listing failure", output.detailsCalls)
+	}
+	if ui.calls != 0 {
+		t.Errorf("prompts = %v, want none after namespace listing failure", ui.prompts)
+	}
+	if tokenCalls != 0 {
+		t.Errorf("token calls = %d, want none after namespace listing failure", tokenCalls)
+	}
+	if fc.listCalls != 0 || fc.created != 0 {
+		t.Errorf("list calls = %d, creations = %d; want none after namespace listing failure", fc.listCalls, fc.created)
+	}
+	if len(conn.requests) != 0 {
+		t.Errorf("connections = %d, want none after namespace listing failure", len(conn.requests))
+	}
+}
+
 type failingDetailsOutput struct {
 	Output
 	err   error
