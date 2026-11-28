@@ -115,17 +115,64 @@ func TestTokenFailures(t *testing.T) {
 }
 
 func TestRedirectAndCancellation(t *testing.T) {
-	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/elsewhere", http.StatusFound) }))
-	defer s.Close()
-	c := New(time.Second, s.URL, "", "")
-	if _, err := c.Token(context.Background(), "u", "p"); err == nil {
-		t.Fatal("redirect accepted")
+	for _, status := range []int{
+		http.StatusMovedPermanently,
+		http.StatusFound,
+		http.StatusSeeOther,
+		http.StatusTemporaryRedirect,
+		http.StatusPermanentRedirect,
+	} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var originCalls, destinationCalls atomic.Int32
+			destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				destinationCalls.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprint(w, `{"access_token":"destination-token"}`)
+			}))
+			defer destination.Close()
+			origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				originCalls.Add(1)
+				if r.Method != http.MethodPost {
+					t.Errorf("method = %s, want POST", r.Method)
+				}
+				if err := r.ParseForm(); err != nil {
+					t.Error(err)
+				}
+				if r.Form.Get("client_id") != "u" || r.Form.Get("client_secret") != "secret" {
+					t.Error("origin did not receive OAuth credentials")
+				}
+				w.Header().Set("Location", destination.URL)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(status)
+				fmt.Fprint(w, `{"access_token":"origin-token"}`)
+			}))
+			defer origin.Close()
+			c := New(time.Second, origin.URL, "", "")
+			token, err := c.Token(context.Background(), "u", "secret")
+			if err == nil {
+				t.Error("redirect accepted")
+			}
+			if token != "" {
+				t.Error("redirect returned a nonempty token")
+			}
+			if got := originCalls.Load(); got != 1 {
+				t.Errorf("origin requests = %d, want 1 (POST must not be retried)", got)
+			}
+			if got := destinationCalls.Load(); got != 0 {
+				t.Errorf("destination requests = %d, want 0 (credentials must not be forwarded)", got)
+			}
+		})
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if _, err := c.Token(ctx, "u", "p"); err == nil {
-		t.Fatal("cancelled request accepted")
-	}
+	t.Run("cancellation", func(t *testing.T) {
+		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/elsewhere", http.StatusFound) }))
+		defer s.Close()
+		c := New(time.Second, s.URL, "", "")
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := c.Token(ctx, "u", "p"); err == nil {
+			t.Fatal("cancelled request accepted")
+		}
+	})
 }
 
 func TestCreateRejectsUnsuccessfulResponses(t *testing.T) {
