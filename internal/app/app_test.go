@@ -42,12 +42,16 @@ type fakeFirecall struct {
 	created                                 int
 	err                                     error
 	listCalls                               int
+	tokenFn                                 func(context.Context, string, string) (string, error)
 	listFn                                  func(context.Context, string, string, string) ([]firecall.Active, error)
 	noActivation                            bool
 }
 
-func (f *fakeFirecall) Token(_ context.Context, u, p string) (string, error) {
+func (f *fakeFirecall) Token(ctx context.Context, u, p string) (string, error) {
 	f.tokenUser, f.tokenPassword = u, p
+	if f.tokenFn != nil {
+		return f.tokenFn(ctx, u, p)
+	}
 	return "token", f.err
 }
 func (f *fakeFirecall) List(ctx context.Context, token, account, role string) ([]firecall.Active, error) {

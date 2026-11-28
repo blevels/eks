@@ -10,6 +10,30 @@ import (
 	"eks/internal/namespace"
 )
 
+func TestCanceledTokenAuthorizationCannotConnect(t *testing.T) {
+	a, conn, fc, _ := fixture()
+	production(a)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tokenCalls := 0
+	fc.tokenFn = func(context.Context, string, string) (string, error) {
+		tokenCalls++
+		cancel()
+		return "token", nil
+	}
+
+	err := a.Run(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error = %v, want context.Canceled", err)
+	}
+	if tokenCalls != 1 {
+		t.Fatalf("token calls = %d, want one", tokenCalls)
+	}
+	if len(conn.requests) != 0 {
+		t.Fatalf("connections = %d, want none after cancellation", len(conn.requests))
+	}
+}
+
 type cancelDetailsOutput struct {
 	Output
 	cancel context.CancelFunc
