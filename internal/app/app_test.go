@@ -299,6 +299,66 @@ func TestActiveProductionSuppliedDetails(t *testing.T) {
 	}
 }
 
+func TestActiveProductionRefreshPasswords(t *testing.T) {
+	for _, tt := range []struct {
+		name, password string
+	}{
+		{name: "prompted password"},
+		{name: "supplied password", password: "configured-production-password"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			a, conn, fc, ui := fixture()
+			production(a)
+			a.Config.Once = false
+			a.Config.ProductionPassword = tt.password
+			ui.yes = false
+			waits := 0
+			a.Wait = func(context.Context, time.Duration) error {
+				waits++
+				wantPassword := tt.password
+				var wantPrompts []string
+				if tt.password == "" {
+					wantPassword = ui.password
+					wantPrompts = []string{"password"}
+					if waits == 2 {
+						wantPrompts = append(wantPrompts, "password")
+					}
+				}
+				if !slices.Equal(ui.prompts, wantPrompts) || ui.calls != len(wantPrompts) {
+					t.Fatalf("cycle %d: prompts = %v, calls = %d; want %v and %d calls",
+						waits, ui.prompts, ui.calls, wantPrompts, len(wantPrompts))
+				}
+				if fc.tokenUser != "ssample-user" || fc.tokenPassword != wantPassword {
+					t.Fatalf("cycle %d: OAuth did not receive the production identity and selected password", waits)
+				}
+				if fc.listCalls != waits || fc.created != 0 {
+					t.Fatalf("cycle %d: access lookups = %d, creations = %d; want %d and 0",
+						waits, fc.listCalls, fc.created, waits)
+				}
+				if len(conn.requests) != waits {
+					t.Fatalf("cycle %d: connections = %d, want %d", waits, len(conn.requests), waits)
+				}
+				if r := conn.requests[waits-1]; r.Username != "ssample-user" || r.Password != wantPassword {
+					t.Fatalf("cycle %d: connection did not receive the production identity and selected password", waits)
+				}
+				if waits >= 2 {
+					return context.Canceled
+				}
+				// A fresh prompt must supply the next cycle's credentials.
+				ui.password = "second-cycle-production-password"
+				return nil
+			}
+
+			if err := a.Run(context.Background()); !errors.Is(err, context.Canceled) {
+				t.Fatalf("Run error = %v, want cancellation after two successful cycles", err)
+			}
+			if waits != 2 || len(conn.requests) != 2 {
+				t.Fatalf("waits = %d, connections = %d; want two each", waits, len(conn.requests))
+			}
+		})
+	}
+}
+
 func TestProductionSelectionConnectsToChosenTarget(t *testing.T) {
 	a, conn, fc, ui := fixture()
 	a.Store = fakeStore{items: []namespace.Namespace{
