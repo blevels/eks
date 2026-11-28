@@ -415,6 +415,71 @@ func TestFailedApprovalCannotRequestProductionAccess(t *testing.T) {
 	}
 }
 
+type failingTicketUI struct {
+	*fakeUI
+	err error
+}
+
+func (ui failingTicketUI) Ticket(context.Context) (string, error) {
+	ui.calls++
+	ui.prompts = append(ui.prompts, "ticket")
+	return "", ui.err
+}
+
+func TestFailedTicketCannotRequestProductionAccess(t *testing.T) {
+	for _, tt := range []struct {
+		name, password string
+	}{
+		{name: "prompted password"},
+		{name: "supplied password", password: "configured-production-password"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			a, conn, fc, ui := fixture()
+			production(a)
+			a.Config.ProductionPassword = tt.password
+			fc.active = nil
+			ticketErr := errors.New("ticket prompt failed")
+			a.UI = failingTicketUI{fakeUI: ui, err: ticketErr}
+			waits := 0
+			a.Wait = func(context.Context, time.Duration) error {
+				waits++
+				return nil
+			}
+			ctx := context.Background()
+
+			if err := a.Run(ctx); !errors.Is(err, ticketErr) {
+				t.Fatalf("Run error = %v, want ticket prompt error %v", err, ticketErr)
+			}
+			if err := ctx.Err(); err != nil {
+				t.Fatalf("context error = %v, want live context", err)
+			}
+			if fc.listCalls != 1 || fc.created != 0 {
+				t.Errorf("list calls = %d, creations = %d; want only initial lookup and no creation",
+					fc.listCalls, fc.created)
+			}
+			if waits != 0 {
+				t.Errorf("activation waits = %d, want none after ticket failure", waits)
+			}
+			if len(conn.requests) != 0 {
+				t.Errorf("connections = %d, want none after ticket failure", len(conn.requests))
+			}
+			wantPassword := tt.password
+			wantPrompts := []string{"confirm", "ticket"}
+			if wantPassword == "" {
+				wantPassword = ui.password
+				wantPrompts = append([]string{"password"}, wantPrompts...)
+			}
+			if fc.tokenPassword != wantPassword {
+				t.Error("OAuth did not receive the selected production password")
+			}
+			if !slices.Equal(ui.prompts, wantPrompts) || ui.calls != len(wantPrompts) {
+				t.Errorf("prompts = %v, calls = %d; want %v and %d calls",
+					ui.prompts, ui.calls, wantPrompts, len(wantPrompts))
+			}
+		})
+	}
+}
+
 func (o *failingCreatedOutput) Created([]firecall.Created) error {
 	o.calls++
 	return o.err
@@ -701,16 +766,6 @@ func TestActivationWaitFailureCannotConnect(t *testing.T) {
 			}
 		})
 	}
-}
-
-type failingTicketUI struct {
-	*fakeUI
-	err error
-}
-
-func (u failingTicketUI) Ticket(ctx context.Context) (string, error) {
-	ticket, _ := u.fakeUI.Ticket(ctx)
-	return ticket, u.err
 }
 
 func TestFailedTicketPromptCannotRequestProductionAccess(t *testing.T) {
