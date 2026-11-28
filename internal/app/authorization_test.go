@@ -176,6 +176,12 @@ type failingConfirmUI struct {
 	err error
 }
 
+type failingCreatedOutput struct {
+	Output
+	err   error
+	calls int
+}
+
 func (ui failingConfirmUI) Confirm(ctx context.Context) (bool, error) {
 	yes, _ := ui.fakeUI.Confirm(ctx)
 	return yes, ui.err
@@ -232,6 +238,49 @@ func TestFailedApprovalCannotRequestProductionAccess(t *testing.T) {
 					ui.prompts, ui.calls, wantPrompts, len(wantPrompts))
 			}
 		})
+	}
+}
+
+func (o *failingCreatedOutput) Created([]firecall.Created) error {
+	o.calls++
+	return o.err
+}
+
+func TestFailedCreatedOutputStopsActivation(t *testing.T) {
+	a, conn, fc, _ := fixture()
+	production(a)
+	fc.active = nil
+	displayErr := errors.New("access request display failed")
+	output := &failingCreatedOutput{Output: a.Output, err: displayErr}
+	a.Output = output
+	ctx := context.Background()
+	waits := 0
+	a.Wait = func(context.Context, time.Duration) error {
+		waits++
+		return errors.New("unexpected wait after access request display failure")
+	}
+
+	err := a.Run(ctx)
+	if !errors.Is(err, displayErr) {
+		t.Fatalf("Run error = %v, want access request display error", err)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("context error = %v, want live context", ctx.Err())
+	}
+	if output.calls != 1 {
+		t.Errorf("created display calls = %d, want one", output.calls)
+	}
+	if fc.created != 1 {
+		t.Errorf("creations = %d, want exactly one", fc.created)
+	}
+	if fc.listCalls != 1 {
+		t.Errorf("list calls = %d, want only the initial lookup and no activation lookup", fc.listCalls)
+	}
+	if waits != 0 {
+		t.Errorf("waits = %d, want none after access request display failure", waits)
+	}
+	if len(conn.requests) != 0 {
+		t.Errorf("connections = %d, want none after access request display failure", len(conn.requests))
 	}
 }
 
