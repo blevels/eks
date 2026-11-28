@@ -9,6 +9,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,53 @@ import (
 	"eks/internal/diagnostics/diagtest"
 	"eks/internal/namespace"
 )
+
+func TestProductionSignInFailureDoesNotExposePasswords(t *testing.T) {
+	const suppliedPassword = "CANARY-supplied-production-password-9371"
+	const promptedPassword = "CANARY-prompted-production-password-2846"
+	oauthErr := errors.New("OAuth sign-in failed")
+	for _, supplied := range []bool{true, false} {
+		name, wantPassword, wantPrompts := "prompted", promptedPassword, 1
+		if supplied {
+			name, wantPassword, wantPrompts = "supplied", suppliedPassword, 0
+		}
+		t.Run(name, func(t *testing.T) {
+			a, _, fc, ui := fixture()
+			production(a)
+			ui.password = promptedPassword
+			if supplied {
+				a.Config.ProductionPassword = suppliedPassword
+			}
+			var logs, output bytes.Buffer
+			a.Log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			a.Output = Printer{Writer: &output}
+			fc.tokenFn = func(_ context.Context, _, password string) (string, error) {
+				if password != wantPassword {
+					t.Error("OAuth did not receive the selected production password")
+				}
+				return "", oauthErr
+			}
+
+			if err := a.Run(context.Background()); !errors.Is(err, oauthErr) {
+				t.Fatalf("Run error = %v, want original OAuth error", err)
+			}
+			if ui.calls != wantPrompts || (wantPrompts == 1 && ui.prompts[0] != "password") {
+				t.Errorf("prompts = %v, calls = %d; want %d password prompts", ui.prompts, ui.calls, wantPrompts)
+			}
+			if !strings.Contains(logs.String(), "oauth_token.outcome") {
+				t.Error("OAuth outcome was not captured in diagnostic logs")
+			}
+			for _, password := range []string{suppliedPassword, promptedPassword} {
+				if strings.Contains(logs.String(), password) {
+					t.Error("production password appeared in diagnostic logs")
+				}
+				if strings.Contains(output.String(), password) {
+					t.Error("production password appeared in application output")
+				}
+			}
+		})
+	}
+}
 
 func TestWorkflowDiagnosticCoverage(t *testing.T) {
 	for _, scenario := range []string{"nonprod", "list", "active", "created", "declined", "noninteractive", "activation_timeout", "activation_cancel", "refresh_cancel", "decrypt_user", "decrypt_password", "query", "connection", "output", "ambiguous", "invalid_choice", "password", "confirmation", "ticket", "empty", "invalid_row", "production_config"} {
