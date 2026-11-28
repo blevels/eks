@@ -422,6 +422,72 @@ func TestActiveProductionRefreshPasswordFailure(t *testing.T) {
 	}
 }
 
+func TestActiveProductionRefreshStopsOnWaitFailure(t *testing.T) {
+	for _, tt := range []struct {
+		name, password string
+	}{
+		{name: "prompted password"},
+		{name: "supplied password", password: "configured-production-password"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			a, conn, fc, ui := fixture()
+			production(a)
+			a.Config.Once = false
+			a.Config.ProductionPassword = tt.password
+			waitErr := errors.New("refresh wait failed")
+			tokenCalls := 0
+			fc.tokenFn = func(context.Context, string, string) (string, error) {
+				tokenCalls++
+				return "token", nil
+			}
+			waits := 0
+			a.Wait = func(context.Context, time.Duration) error {
+				waits++
+				if waits != 1 {
+					t.Fatal("refresh continued after the wait failed")
+				}
+				if len(conn.requests) != 1 || tokenCalls != 1 || fc.listCalls != 1 {
+					t.Fatalf("before wait: connections = %d, tokens = %d, access checks = %d; want one each",
+						len(conn.requests), tokenCalls, fc.listCalls)
+				}
+				// If refresh continues, missing access exposes approval and ticket prompts.
+				fc.active = nil
+				return waitErr
+			}
+
+			if err := a.Run(context.Background()); !errors.Is(err, waitErr) {
+				t.Fatalf("Run error = %v, want wait error %v", err, waitErr)
+			}
+			if waits != 1 {
+				t.Errorf("refresh waits = %d, want one", waits)
+			}
+			if tokenCalls != 1 || fc.listCalls != 1 || fc.created != 0 {
+				t.Errorf("tokens = %d, access checks = %d, creations = %d; want 1, 1, 0",
+					tokenCalls, fc.listCalls, fc.created)
+			}
+			wantPassword := tt.password
+			var wantPrompts []string
+			if wantPassword == "" {
+				wantPassword = ui.password
+				wantPrompts = []string{"password"}
+			}
+			if !slices.Equal(ui.prompts, wantPrompts) || ui.calls != len(wantPrompts) {
+				t.Errorf("prompts = %v, calls = %d; want %v and %d calls",
+					ui.prompts, ui.calls, wantPrompts, len(wantPrompts))
+			}
+			if fc.tokenUser != "ssample-user" || fc.tokenPassword != wantPassword {
+				t.Error("OAuth did not receive the production identity and selected password")
+			}
+			if len(conn.requests) != 1 {
+				t.Fatalf("connections = %d, want one", len(conn.requests))
+			}
+			if r := conn.requests[0]; r.Username != "ssample-user" || r.Password != wantPassword {
+				t.Error("connection did not receive the production identity and selected password")
+			}
+		})
+	}
+}
+
 func TestActiveProductionRefreshStopsOnConnectionFailure(t *testing.T) {
 	for _, tt := range []struct {
 		name, password string
