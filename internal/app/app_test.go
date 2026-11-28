@@ -511,6 +511,13 @@ func TestProductionSelectionConnectsToChosenTarget(t *testing.T) {
 		{Name: "orders", Environment: "prod", ID: "34", Account: "210987654321", Role: "OrdersRole"},
 	}}
 	ui.index = 1
+	fc.listFn = func(_ context.Context, _, account, role string) ([]firecall.Active, error) {
+		if account != "210987654321" || role != "arn:aws:iam::210987654321:role/OrdersRole" {
+			t.Errorf("access lookup target = %q, %q; want selected orders account and ARN", account, role)
+			return nil, errors.New("unexpected access lookup target")
+		}
+		return []firecall.Active{{Status: "active"}}, nil
+	}
 	a.Config.ProductionPassword = "configured-production-password"
 	a.Config.Ticket = "CHG-configured"
 
