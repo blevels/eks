@@ -72,6 +72,67 @@ func TestFailedSignInCannotCheckProductionAccess(t *testing.T) {
 	}
 }
 
+func TestFailedSignInRejectsReturnedToken(t *testing.T) {
+	for _, tt := range []struct {
+		name, password string
+	}{
+		{name: "prompted password"},
+		{name: "supplied password", password: "configured-production-password"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			a, conn, fc, ui := fixture()
+			production(a)
+			a.Config.ProductionPassword = tt.password
+			fc.active = nil
+			signInErr := errors.New("OAuth sign-in failed with a returned token")
+			wantPassword := tt.password
+			var wantPrompts []string
+			if wantPassword == "" {
+				wantPassword = ui.password
+				wantPrompts = []string{"password"}
+			}
+			tokenCalls := 0
+			fc.tokenFn = func(_ context.Context, _, password string) (string, error) {
+				tokenCalls++
+				if password != wantPassword {
+					t.Error("OAuth did not receive the selected production password")
+				}
+				return "unusable-partial-token", signInErr
+			}
+			waits := 0
+			a.Wait = func(context.Context, time.Duration) error {
+				waits++
+				return nil
+			}
+			ctx := context.Background()
+
+			if err := a.Run(ctx); !errors.Is(err, signInErr) {
+				t.Fatalf("Run error = %v, want OAuth sign-in error %v", err, signInErr)
+			}
+			if err := ctx.Err(); err != nil {
+				t.Fatalf("context error = %v, want live context", err)
+			}
+			if tokenCalls != 1 {
+				t.Errorf("OAuth token calls = %d, want exactly one", tokenCalls)
+			}
+			if fc.listCalls != 0 || fc.created != 0 {
+				t.Errorf("list calls = %d, creations = %d; want none after sign-in failure",
+					fc.listCalls, fc.created)
+			}
+			if waits != 0 {
+				t.Errorf("activation waits = %d, want none after sign-in failure", waits)
+			}
+			if len(conn.requests) != 0 {
+				t.Errorf("connections = %d, want none after sign-in failure", len(conn.requests))
+			}
+			if !slices.Equal(ui.prompts, wantPrompts) || ui.calls != len(wantPrompts) {
+				t.Errorf("prompts = %v, calls = %d; want %v and %d calls",
+					ui.prompts, ui.calls, wantPrompts, len(wantPrompts))
+			}
+		})
+	}
+}
+
 type failingChoiceInteraction struct {
 	Interaction
 	err        error
