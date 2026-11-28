@@ -299,6 +299,43 @@ func TestActiveProductionSuppliedDetails(t *testing.T) {
 	}
 }
 
+func TestProductionSelectionConnectsToChosenTarget(t *testing.T) {
+	a, conn, fc, ui := fixture()
+	a.Store = fakeStore{items: []namespace.Namespace{
+		{Name: "payments", Environment: "prod", ID: "12", Account: "123456789012", Role: "PaymentsRole"},
+		{Name: "orders", Environment: "prod", ID: "34", Account: "210987654321", Role: "OrdersRole"},
+	}}
+	ui.index = 1
+	a.Config.ProductionPassword = "configured-production-password"
+	a.Config.Ticket = "CHG-configured"
+
+	if err := a.Run(context.Background()); err != nil {
+		t.Fatalf("Run error = %v", err)
+	}
+	if want := []string{"choose"}; !slices.Equal(ui.prompts, want) {
+		t.Fatalf("prompts = %v, want %v", ui.prompts, want)
+	}
+	if fc.tokenUser != "ssample-user" || fc.tokenPassword != a.Config.ProductionPassword {
+		t.Fatal("OAuth did not receive the production identity and supplied password")
+	}
+	if fc.listCalls != 1 {
+		t.Errorf("access lookups = %d, want one", fc.listCalls)
+	}
+	if fc.created != 0 {
+		t.Errorf("creations = %d, want none for active access", fc.created)
+	}
+	if len(conn.requests) != 1 {
+		t.Fatalf("connections = %d, want one", len(conn.requests))
+	}
+	r := conn.requests[0]
+	if r.Namespace != "orders" || r.ARN != "arn:aws:iam::210987654321:role/OrdersRole" {
+		t.Errorf("connection target = %q, %q; want selected orders namespace and ARN", r.Namespace, r.ARN)
+	}
+	if r.Username != "ssample-user" || r.Password != a.Config.ProductionPassword {
+		t.Error("connection did not receive the production identity and supplied password")
+	}
+}
+
 func TestJSONSuppliedProductionDetails(t *testing.T) {
 	for _, tt := range []struct {
 		name            string
