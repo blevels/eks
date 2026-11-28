@@ -9,6 +9,28 @@ import (
 	"eks/internal/firecall"
 )
 
+func TestCanceledActiveAuthorizationCannotConnect(t *testing.T) {
+	a, conn, fc, _ := fixture()
+	production(a)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fc.listFn = func(context.Context, string, string, string) ([]firecall.Active, error) {
+		cancel()
+		return []firecall.Active{{Status: "active"}}, nil
+	}
+
+	err := a.Run(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error = %v, want context.Canceled", err)
+	}
+	if fc.listCalls != 1 || fc.created != 0 {
+		t.Fatalf("list calls = %d, creations = %d; want one initial lookup and no creation", fc.listCalls, fc.created)
+	}
+	if len(conn.requests) != 0 {
+		t.Fatalf("connections = %d, want none after cancellation", len(conn.requests))
+	}
+}
+
 func TestActivationBeforeConnection(t *testing.T) {
 	for _, mode := range []string{"immediate", "delayed", "timeout", "cancel", "api error", "inflight timeout", "create error"} {
 		t.Run(mode, func(t *testing.T) {
