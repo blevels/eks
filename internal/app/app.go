@@ -53,6 +53,8 @@ type App struct {
 	Now       func() time.Time
 }
 
+// Wait pauses for d or until ctx is canceled, returning the context error on
+// cancellation and nil when the timer expires.
 func Wait(ctx context.Context, d time.Duration) error {
 	timer := time.NewTimer(d)
 	defer timer.Stop()
@@ -64,21 +66,23 @@ func Wait(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// observe also covers injected fake boundaries without coupling pure helpers to logging.
-func observe[T any](ctx context.Context, component, operation string, f func(context.Context) (T, error)) (value T, err error) {
-	ctx, scope := diagnostics.Start(ctx, component, operation)
-	value, err = f(ctx)
-	return value, scope.End(err)
-}
+// action runs f with an operation context and returns its diagnostic-owned
+// error, or nil on success. It keeps one-call output boundaries concise.
 func action(ctx context.Context, component, operation string, f func(context.Context) error) error {
-	_, err := observe(ctx, component, operation, func(ctx context.Context) (struct{}, error) { return struct{}{}, f(ctx) })
-	return err
+	ctx, scope := diagnostics.Start(ctx, component, operation)
+	return scope.End(f(ctx))
 }
+
+// failed records an immediate validation error under component and operation,
+// returning the diagnostic-owned error without adding another workflow step.
 func failed(ctx context.Context, component, operation string, err error) error {
 	_, scope := diagnostics.Start(ctx, component, operation)
 	return scope.End(err)
 }
 
+// Run selects a namespace using Config and runs connection refreshes until Once,
+// cancellation, or failure. List only prints matches. Production connections
+// require authorization; errors preserve their diagnostic owner and cause.
 func (a *App) Run(ctx context.Context) (err error) {
 	ctx = diagnostics.WithLogger(ctx, a.Log)
 	ctx = diagnostics.Cycle(ctx)
@@ -89,8 +93,9 @@ func (a *App) Run(ctx context.Context) (err error) {
 	if c.List {
 		mode = "list"
 	}
-	items, err := observe(ctx, "workflow", "selection", func(ctx context.Context) ([]namespace.Namespace, error) { return a.Store.Find(ctx, mode, c.Target) })
-	if err != nil {
+	selectionCtx, selection := diagnostics.Start(ctx, "workflow", "selection")
+	items, err := a.Store.Find(selectionCtx, mode, c.Target)
+	if err = selection.End(err); err != nil {
 		return err
 	}
 	if c.List {
@@ -104,8 +109,9 @@ func (a *App) Run(ctx context.Context) (err error) {
 		if c.JSON {
 			return failed(ctx, "workflow", "selection_validation", errors.New("multiple namespaces matched; JSON mode cannot prompt; use a unique selector"))
 		}
-		index, err := observe(ctx, "terminal", "selection", func(ctx context.Context) (int, error) { return a.UI.Choose(ctx, items) })
-		if err != nil {
+		choiceCtx, choice := diagnostics.Start(ctx, "terminal", "selection")
+		index, err := a.UI.Choose(choiceCtx, items)
+		if err = choice.End(err); err != nil {
 			return err
 		}
 		if index < 0 || index >= len(items) {
@@ -154,6 +160,9 @@ func (a *App) Run(ctx context.Context) (err error) {
 	}
 }
 
+// refresh decrypts c's credentials, authorizes production access to n, connects,
+// and prints success using now. It returns the first boundary error and reports
+// a blocked connection only if the connector has not succeeded.
 func (a *App) refresh(ctx context.Context, n namespace.Namespace, c config.Config, now func() time.Time) (err error) {
 	ctx, refresh := diagnostics.Start(ctx, "workflow", "refresh")
 	connected := false
@@ -163,16 +172,14 @@ func (a *App) refresh(ctx context.Context, n namespace.Namespace, c config.Confi
 		}
 		err = refresh.End(err)
 	}()
-	username, err := observe(ctx, "credentials", "decrypt_user", func(context.Context) (string, error) {
-		return credentials.Decrypt(c.EncryptedUser, c.Passphrase, c.Digest)
-	})
-	if err != nil {
+	_, decryptUser := diagnostics.Start(ctx, "credentials", "decrypt_user")
+	username, err := credentials.Decrypt(c.EncryptedUser, c.Passphrase, c.Digest)
+	if err = decryptUser.End(err); err != nil {
 		return fmt.Errorf("decrypt username: %w", err)
 	}
-	password, err := observe(ctx, "credentials", "decrypt_password", func(context.Context) (string, error) {
-		return credentials.Decrypt(c.EncryptedPassword, c.Passphrase, c.Digest)
-	})
-	if err != nil {
+	_, decryptPassword := diagnostics.Start(ctx, "credentials", "decrypt_password")
+	password, err := credentials.Decrypt(c.EncryptedPassword, c.Passphrase, c.Digest)
+	if err = decryptPassword.End(err); err != nil {
 		return fmt.Errorf("decrypt password: %w", err)
 	}
 	email := username + "@" + c.EmailDomain
@@ -180,8 +187,9 @@ func (a *App) refresh(ctx context.Context, n namespace.Namespace, c config.Confi
 		username = "s" + username
 		password = c.ProductionPassword
 		if password == "" {
-			password, err = observe(ctx, "terminal", "password", a.UI.Password)
-			if err != nil {
+			passwordCtx, prompt := diagnostics.Start(ctx, "terminal", "password")
+			password, err = a.UI.Password(passwordCtx)
+			if err = prompt.End(err); err != nil {
 				return err
 			}
 		}
@@ -198,9 +206,12 @@ func (a *App) refresh(ctx context.Context, n namespace.Namespace, c config.Confi
 		return err
 	}
 	refresh.Event("connection.permitted", slog.LevelInfo)
-	if err := action(ctx, "workflow", "connection", func(ctx context.Context) error {
-		return a.Connector.Connect(ctx, kconnect.Request{Username: username, Password: password, Namespace: n.Name, ARN: n.ARN(), Region: c.Region, Endpoint: c.IDPEndpoint, Provider: c.IDPProvider})
-	}); err != nil {
+	connectionCtx, connection := diagnostics.Start(ctx, "workflow", "connection")
+	err = a.Connector.Connect(connectionCtx, kconnect.Request{
+		Username: username, Password: password, Namespace: n.Name, ARN: n.ARN(),
+		Region: c.Region, Endpoint: c.IDPEndpoint, Provider: c.IDPProvider,
+	})
+	if err = connection.End(err); err != nil {
 		return err
 	}
 	connected = true
@@ -210,6 +221,9 @@ func (a *App) refresh(ctx context.Context, n namespace.Namespace, c config.Confi
 	return nil
 }
 
+// authorize uses username and password to verify access to n's account and role.
+// If needed, it confirms creation interactively using the base identity's email
+// and waits for activation. It returns errors or a decline without connecting.
 func (a *App) authorize(ctx context.Context, n namespace.Namespace, username, password, email string) (err error) {
 	ctx, authorization := diagnostics.Start(ctx, "workflow", "authorization")
 	defer func() {
@@ -218,14 +232,14 @@ func (a *App) authorize(ctx context.Context, n namespace.Namespace, username, pa
 		}
 		err = authorization.End(err)
 	}()
-	token, err := observe(ctx, "http", "oauth_token", func(ctx context.Context) (string, error) { return a.Firecalls.Token(ctx, username, password) })
-	if err != nil {
+	tokenCtx, oauth := diagnostics.Start(ctx, "http", "oauth_token")
+	token, err := a.Firecalls.Token(tokenCtx, username, password)
+	if err = oauth.End(err); err != nil {
 		return err
 	}
-	active, err := observe(ctx, "http", "list_firecalls", func(ctx context.Context) ([]firecall.Active, error) {
-		return a.Firecalls.List(ctx, token, n.Account, n.ARN())
-	})
-	if err != nil {
+	listCtx, listing := diagnostics.Start(ctx, "http", "list_firecalls")
+	active, err := a.Firecalls.List(listCtx, token, n.Account, n.ARN())
+	if err = listing.End(err); err != nil {
 		return err
 	}
 	if len(active) > 0 {
@@ -236,8 +250,9 @@ func (a *App) authorize(ctx context.Context, n namespace.Namespace, username, pa
 		authorization.Event("authorization.blocked_noninteractive", slog.LevelInfo)
 		return errors.New("no active firecall; JSON mode will not create one without interactive confirmation")
 	}
-	yes, err := observe(ctx, "terminal", "confirmation", a.UI.Confirm)
-	if err != nil {
+	confirmationCtx, confirmation := diagnostics.Start(ctx, "terminal", "confirmation")
+	yes, err := a.UI.Confirm(confirmationCtx)
+	if err = confirmation.End(err); err != nil {
 		return err
 	}
 	if !yes {
@@ -246,15 +261,15 @@ func (a *App) authorize(ctx context.Context, n namespace.Namespace, username, pa
 	}
 	ticket := a.Config.Ticket
 	if ticket == "" {
-		ticket, err = observe(ctx, "terminal", "ticket", a.UI.Ticket)
-		if err != nil {
+		ticketCtx, prompt := diagnostics.Start(ctx, "terminal", "ticket")
+		ticket, err = a.UI.Ticket(ticketCtx)
+		if err = prompt.End(err); err != nil {
 			return err
 		}
 	}
-	created, err := observe(ctx, "http", "create_firecall", func(ctx context.Context) ([]firecall.Created, error) {
-		return a.Firecalls.Create(ctx, token, n.ARN(), email, ticket, a.Config.Duration)
-	})
-	if err != nil {
+	createCtx, creation := diagnostics.Start(ctx, "http", "create_firecall")
+	created, err := a.Firecalls.Create(createCtx, token, n.ARN(), email, ticket, a.Config.Duration)
+	if err = creation.End(err); err != nil {
 		return err
 	}
 	if err := action(ctx, "output", "output_created", func(context.Context) error { return a.Output.Created(created) }); err != nil {
@@ -263,8 +278,10 @@ func (a *App) authorize(ctx context.Context, n namespace.Namespace, username, pa
 	return a.waitForActivation(ctx, n, token)
 }
 
-// waitForActivation confirms account-and-role authorization, not a specific
-// request ID: the current list contract does not expose request IDs.
+// waitForActivation polls for n's account-and-role authorization using token,
+// printing active access when found. The list contract exposes no request IDs.
+// It returns lookup/output errors or cancellation/timeout errors within Config's
+// activation deadline; it never retries a failed lookup itself.
 func (a *App) waitForActivation(ctx context.Context, n namespace.Namespace, token string) (err error) {
 	ctx, activation := diagnostics.Start(ctx, "workflow", "activation")
 	defer func() { err = activation.End(err) }()
@@ -280,10 +297,9 @@ func (a *App) waitForActivation(ctx context.Context, n namespace.Namespace, toke
 			return fmt.Errorf("waiting for firecall activation: %w", err)
 		}
 		activation.Event("activation.poll", slog.LevelDebug)
-		active, err := observe(ctx, "http", "list_firecalls", func(ctx context.Context) ([]firecall.Active, error) {
-			return a.Firecalls.List(ctx, token, n.Account, n.ARN())
-		})
-		if err != nil {
+		listCtx, listing := diagnostics.Start(ctx, "http", "list_firecalls")
+		active, err := a.Firecalls.List(listCtx, token, n.Account, n.ARN())
+		if err = listing.End(err); err != nil {
 			return fmt.Errorf("confirm firecall activation: %w", err)
 		}
 		if err := ctx.Err(); err != nil {

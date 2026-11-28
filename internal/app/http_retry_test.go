@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"eks/internal/diagnostics/diagtest"
 	"eks/internal/firecall"
 )
 
@@ -51,7 +52,29 @@ func TestProductionHTTPRetrySafety(t *testing.T) {
 			if mode == "activation deadline" {
 				a.Config.FirecallActivationTimeout = 20 * time.Millisecond
 			}
-			err := a.Run(context.Background())
+			ctx, logs := diagtest.New(t)
+			err := a.Run(ctx)
+			logs.Contract()
+			logs.NoSecrets("sample-user", "production-only", "local-test-token")
+			token := logs.Event("oauth_token.start")
+			authorization := logs.Event("authorization.start")
+			if token["parent_operation_id"] != authorization["operation_id"] {
+				t.Fatal("token operation lost authorization parent", logs.Text())
+			}
+			// The real HTTP client must receive the operation context, not its parent:
+			// attempts belong to a token/list/create call even when retries fail.
+			operations := make(map[any]map[string]any)
+			for _, record := range logs.Records() {
+				if record["event"] == "oauth_token.start" || record["event"] == "list_firecalls.start" || record["event"] == "create_firecall.start" {
+					operations[record["operation_id"]] = record
+				}
+				if record["event"] == "http_attempt.start" {
+					parent := operations[record["parent_operation_id"]]
+					if parent == nil || parent["cycle_id"] != record["cycle_id"] {
+						t.Fatal("HTTP attempt lost operation context", record)
+					}
+				}
+			}
 			if mode == "recovery" {
 				if err != nil || len(conn.requests) != 1 || creates.Load() != 1 || lists.Load() != 3 {
 					t.Fatal(err, len(conn.requests), creates.Load(), lists.Load())
